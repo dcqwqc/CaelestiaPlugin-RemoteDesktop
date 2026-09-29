@@ -153,7 +153,8 @@ ColumnLayout {
         model: RemoteDesktop.RemoteStatus.devices.filter(device =>
             !device.isSelf
             && (
-                device.canRemoteDesktop
+                ["osiris", "nothing", "mirai"].includes(device.id)
+                || device.canRemoteDesktop
                 || device.canWake
                 || (device.canSsh && device.sshAvailable)
             )

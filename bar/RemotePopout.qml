@@ -21,8 +21,7 @@ ColumnLayout {
     property var exitMenuItems: []
 
     function syncExitMenu(): void {
-        const active = exitMenuItems.find(item => item.nodeId === RemoteDesktop.RemoteStatus.exitNodeId);
-        routeMenu.active = active ?? directExitItem;
+        routeMenu.active = null;
     }
 
     function rebuildExitMenu(): void {
@@ -277,21 +276,12 @@ ColumnLayout {
 
                 attachTo: routePicker
                 items: root.exitMenuItems
-                active: directExitItem
-                onItemSelected: item => RemoteDesktop.RemoteStatus.setExitNode(item.nodeId)
+                active: null
+                onItemSelected: item => {
+                    RemoteDesktop.RemoteStatus.setExitNode(item.nodeId);
+                    Qt.callLater(() => routeMenu.active = null);
+                }
             }
-        }
-
-        ActionButton {
-            disabled: RemoteDesktop.RemoteStatus.exitNodeChanging
-                || (!RemoteDesktop.RemoteStatus.exitNodeActive
-                    && RemoteDesktop.RemoteStatus.exitNodes.length === 0)
-            accent: false
-            icon: "power_settings_new"
-            hint: RemoteDesktop.RemoteStatus.exitNodeActive
-                ? qsTr("Disable exit node")
-                : qsTr("Enable exit node")
-            onClicked: RemoteDesktop.RemoteStatus.toggleExitNode()
         }
     }
 

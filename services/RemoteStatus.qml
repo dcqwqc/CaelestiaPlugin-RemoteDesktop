@@ -12,6 +12,18 @@ Singleton {
     // carry ~/.local/bin, so `kagami-remote` cannot be resolved by name from
     // here. The Hyprland keybind spells the path out for the same reason.
     readonly property string bin: `${Quickshell.env("HOME")}/.local/bin/kagami-remote`
+    readonly property string exitNodeBin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/tailscale-exit-node`
+
+    // Tailscale exit-node state. Selecting one routes all ordinary internet
+    // traffic through that peer while keeping local-LAN access available.
+    property var exitNodes: []
+    property string exitNodeId: ""
+    property string exitNodeName: ""
+    property string preferredExitNodeId: ""
+    property bool exitNodeChanging: false
+    property string exitNodeError: ""
+
+    readonly property bool exitNodeActive: exitNodeId.length > 0
 
     // Which machines this desk actually has, from kagami-remote's own view of
     // hosts.conf. This used to be a literal list of hostnames written twice in
@@ -46,8 +58,50 @@ Singleton {
     }
 
     function refresh(): void {
-        tailscaleProc.running = true;
-        localStateProc.running = true;
+        if (!tailscaleProc.running)
+            tailscaleProc.running = true;
+        if (!localStateProc.running)
+            localStateProc.running = true;
+    }
+
+    function setExitNode(nodeId): void {
+        if (exitNodeChanging)
+            return;
+
+        let target = "";
+        if (nodeId.length > 0) {
+            const node = exitNodes.find(candidate => candidate.id === nodeId);
+            if (!node || !node.online) {
+                exitNodeError = qsTr("That exit node is offline.");
+                return;
+            }
+            target = node.actionHost;
+            preferredExitNodeId = node.id;
+        }
+
+        exitNodeChanging = true;
+        exitNodeError = "";
+        exitNodeProc.errorText = "";
+        exitNodeProc.command = target.length > 0
+            ? [exitNodeBin, "set", target]
+            : [exitNodeBin, "off"];
+        exitNodeProc.running = true;
+    }
+
+    function toggleExitNode(): void {
+        if (exitNodeActive) {
+            setExitNode("");
+            return;
+        }
+
+        let node = exitNodes.find(candidate => candidate.id === preferredExitNodeId && candidate.online);
+        if (!node)
+            node = exitNodes.find(candidate => candidate.online);
+        if (!node) {
+            exitNodeError = qsTr("No exit node is online.");
+            return;
+        }
+        setExitNode(node.id);
     }
 
     Component.onCompleted: {
@@ -90,6 +144,9 @@ Singleton {
                     const data = JSON.parse(text);
                     const byHost = {};
                     const devices = [];
+                    const exitNodes = [];
+                    let activeExitNodeId = "";
+                    let activeExitNodeName = "";
                     const addDevice = (node, isSelf) => {
                         if (!node?.HostName)
                             return;
@@ -106,6 +163,22 @@ Singleton {
                         const hostId = (actionHost.split(".")[0] || node.HostName).toLowerCase();
                         const online = isSelf || !!node.Online;
                         byHost[hostId] = online;
+
+                        if (!isSelf && node.ExitNodeOption) {
+                            const active = !!node.ExitNode;
+                            exitNodes.push({
+                                id: hostId,
+                                name: node.HostName,
+                                actionHost: actionHost,
+                                online: online,
+                                active: active
+                            });
+                            if (active) {
+                                activeExitNodeId = hostId;
+                                activeExitNodeName = node.HostName;
+                            }
+                        }
+
                         devices.push({
                             id: hostId,
                             name: node.HostName,
@@ -139,6 +212,16 @@ Singleton {
                     addDevice(data.Self, true);
                     for (const peer of Object.values(data.Peer ?? {}))
                         addDevice(peer, false);
+                    const availableExitNodes = exitNodes
+                        .filter(node => node.online || node.active)
+                        .sort((a, b) => a.name.localeCompare(b.name));
+                    if (JSON.stringify(root.exitNodes) !== JSON.stringify(availableExitNodes))
+                        root.exitNodes = availableExitNodes;
+                    root.exitNodeId = activeExitNodeId;
+                    root.exitNodeName = activeExitNodeName;
+                    if (activeExitNodeId.length > 0)
+                        root.preferredExitNodeId = activeExitNodeId;
+
                     root.devices = devices;
                     root.hostOnline = byHost;
                     root.sshProbeTargets = devices
@@ -191,6 +274,35 @@ Singleton {
                 }
             }
         }
+    }
+
+    Process {
+        id: exitNodeProc
+
+        property string errorText: ""
+
+        running: false
+        stderr: StdioCollector {
+            onStreamFinished: exitNodeProc.errorText = text.trim()
+        }
+        onExited: code => {
+            root.exitNodeChanging = false;
+            if (code !== 0)
+                root.exitNodeError = exitNodeProc.errorText.length > 0
+                    ? exitNodeProc.errorText
+                    : qsTr("Could not change the exit node.");
+            else
+                root.exitNodeError = "";
+
+            exitNodeRefreshTimer.restart();
+        }
+    }
+
+    Timer {
+        id: exitNodeRefreshTimer
+        interval: 450
+        repeat: false
+        onTriggered: root.refresh()
     }
 
     // The cheap half: purely a look at this machine's own Moonlight client, so

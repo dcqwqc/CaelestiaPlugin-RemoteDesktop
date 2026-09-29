@@ -18,6 +18,57 @@ ColumnLayout {
     width: 336
     spacing: Tokens.spacing.extraSmall
 
+    property var exitMenuItems: []
+
+    function syncExitMenu(): void {
+        const active = exitMenuItems.find(item => item.nodeId === RemoteDesktop.RemoteStatus.exitNodeId);
+        routeSelector.active = active ?? directExitItem;
+    }
+
+    function rebuildExitMenu(): void {
+        for (const item of exitMenuItems) {
+            if (item !== directExitItem)
+                item.destroy();
+        }
+
+        const items = [directExitItem];
+        for (const node of RemoteDesktop.RemoteStatus.exitNodes) {
+            const item = exitNodeMenuItem.createObject(root, {
+                text: node.name,
+                icon: "router",
+                nodeId: node.id
+            });
+            if (item)
+                items.push(item);
+        }
+        exitMenuItems = items;
+        routeSelector.menuItems = items;
+        syncExitMenu();
+    }
+
+    Component.onCompleted: rebuildExitMenu()
+
+    Connections {
+        target: RemoteDesktop.RemoteStatus
+        function onExitNodesChanged(): void { root.rebuildExitMenu(); }
+        function onExitNodeIdChanged(): void { root.syncExitMenu(); }
+    }
+
+    MenuItem {
+        id: directExitItem
+        property string nodeId: ""
+        text: qsTr("Direct")
+        icon: "public"
+    }
+
+    Component {
+        id: exitNodeMenuItem
+
+        MenuItem {
+            required property string nodeId
+        }
+    }
+
     component ActionButton: IconButton {
         id: btn
 
@@ -164,5 +215,82 @@ ColumnLayout {
             required property var modelData
             device: modelData
         }
+    }
+
+    RowLayout {
+        Layout.fillWidth: true
+        Layout.leftMargin: Tokens.padding.extraSmall
+        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.topMargin: Tokens.padding.small
+        Layout.bottomMargin: Tokens.padding.extraSmall
+        spacing: Tokens.spacing.small
+
+        MaterialIcon {
+            text: RemoteDesktop.RemoteStatus.exitNodeActive ? "vpn_lock" : "route"
+            fontStyle: Tokens.font.icon.small
+            color: RemoteDesktop.RemoteStatus.exitNodeActive
+                ? Colours.palette.m3primary
+                : Colours.palette.m3onSurfaceVariant
+        }
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 0
+
+            StyledText {
+                text: qsTr("Internet route")
+                font: Tokens.font.body.builders.small.weight(Font.Medium).build()
+            }
+
+            StyledText {
+                Layout.fillWidth: true
+                text: RemoteDesktop.RemoteStatus.exitNodeActive
+                    ? qsTr("All traffic via %1").arg(RemoteDesktop.RemoteStatus.exitNodeName)
+                    : qsTr("Direct connection")
+                color: Colours.palette.m3onSurfaceVariant
+                elide: Text.ElideRight
+                font: Tokens.font.label.small
+            }
+        }
+
+        ActionButton {
+            disabled: RemoteDesktop.RemoteStatus.exitNodeChanging
+                || (!RemoteDesktop.RemoteStatus.exitNodeActive
+                    && RemoteDesktop.RemoteStatus.exitNodes.length === 0)
+            accent: RemoteDesktop.RemoteStatus.exitNodeActive
+            icon: "power_settings_new"
+            hint: RemoteDesktop.RemoteStatus.exitNodeActive
+                ? qsTr("Disable exit node")
+                : qsTr("Enable exit node")
+            onClicked: RemoteDesktop.RemoteStatus.toggleExitNode()
+        }
+
+        SplitButton {
+            id: routeSelector
+
+            horizontalPadding: Tokens.padding.small
+            verticalPadding: Tokens.padding.extraSmall
+            minLeftWidth: 76
+            type: SplitButton.Tonal
+            disabled: RemoteDesktop.RemoteStatus.exitNodeChanging
+            fallbackIcon: "public"
+            fallbackText: qsTr("Direct")
+            menuItems: root.exitMenuItems
+            active: directExitItem
+            stateLayer.onClicked: routeSelector.expanded = !routeSelector.expanded
+            menu.onItemSelected: item => RemoteDesktop.RemoteStatus.setExitNode(item.nodeId)
+        }
+    }
+
+    StyledText {
+        Layout.fillWidth: true
+        Layout.leftMargin: Tokens.padding.extraSmall + Tokens.padding.large
+        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.bottomMargin: Tokens.padding.extraSmall
+        visible: RemoteDesktop.RemoteStatus.exitNodeError.length > 0
+        text: RemoteDesktop.RemoteStatus.exitNodeError
+        color: Colours.palette.m3error
+        wrapMode: Text.Wrap
+        font: Tokens.font.label.small
     }
 }

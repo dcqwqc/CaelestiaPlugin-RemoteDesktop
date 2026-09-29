@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -u
+
+usage() {
+  echo "usage: tailscale-exit-node set <node>|off" >&2
+  exit 2
+}
+
+case "${1:-}" in
+  set)
+    [ -n "${2:-}" ] || usage
+    args=(set "--exit-node=$2" "--exit-node-allow-lan-access=true")
+    ;;
+  off)
+    args=(set "--exit-node=")
+    ;;
+  *)
+    usage
+    ;;
+esac
+
+err="$(mktemp)"
+trap 'rm -f "$err"' EXIT
+
+if /usr/bin/tailscale "${args[@]}" 2>"$err"; then
+  exit 0
+fi
+code=$?
+
+# Tailscale deliberately requires root unless a local operator is configured.
+# Ask Polkit once, grant only this user the Tailscale operator role, then retry.
+if grep -qiE 'Access denied|checkprefs access denied' "$err"; then
+  if /usr/bin/pkexec /usr/bin/tailscale set --operator="$USER"; then
+    exec /usr/bin/tailscale "${args[@]}"
+  fi
+  echo "Tailscale control authorization was cancelled." >&2
+  exit 126
+fi
+
+cat "$err" >&2
+exit "$code"

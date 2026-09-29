@@ -15,14 +15,14 @@ ColumnLayout {
 
     required property PopoutState popouts
 
-    width: 336
+    width: 304
     spacing: Tokens.spacing.extraSmall
 
     property var exitMenuItems: []
 
     function syncExitMenu(): void {
         const active = exitMenuItems.find(item => item.nodeId === RemoteDesktop.RemoteStatus.exitNodeId);
-        routeSelector.active = active ?? directExitItem;
+        routeMenu.active = active ?? directExitItem;
     }
 
     function rebuildExitMenu(): void {
@@ -42,7 +42,7 @@ ColumnLayout {
                 items.push(item);
         }
         exitMenuItems = items;
-        routeSelector.menuItems = items;
+        routeMenu.items = items;
         syncExitMenu();
     }
 
@@ -75,7 +75,7 @@ ColumnLayout {
         required property string hint
         property bool accent: false
 
-        type: accent ? IconButton.Tonal : IconButton.Text
+        type: IconButton.Text
         font: Tokens.font.icon.small
         shapeMorph: false
 
@@ -101,7 +101,7 @@ ColumnLayout {
         Layout.rightMargin: Tokens.padding.extraSmall
         Layout.topMargin: Tokens.padding.extraSmall
         Layout.bottomMargin: Tokens.padding.extraSmall
-        spacing: Tokens.spacing.small
+        spacing: Tokens.spacing.extraSmall
 
         MaterialIcon {
             text: "computer"
@@ -133,7 +133,7 @@ ColumnLayout {
                     color: !hostRow.online
                         ? Colours.palette.m3error
                         : hostRow.hasSession
-                            ? Colours.palette.m3primary
+                            ? Colours.palette.m3onSurface
                             : Colours.palette.m3onSurfaceVariant
                 }
 
@@ -148,7 +148,7 @@ ColumnLayout {
                     color: !hostRow.online
                         ? Colours.palette.m3error
                         : hostRow.hasSession
-                            ? Colours.palette.m3primary
+                            ? Colours.palette.m3onSurface
                             : Colours.palette.m3onSurfaceVariant
                     font: Tokens.font.body.small
                 }
@@ -193,8 +193,8 @@ ColumnLayout {
     }
 
     StyledText {
-        Layout.topMargin: Tokens.padding.small
-        Layout.bottomMargin: Tokens.padding.extraSmall
+        Layout.topMargin: Tokens.padding.extraSmall
+        Layout.bottomMargin: 0
         Layout.leftMargin: Tokens.padding.extraSmall
         text: qsTr("Remote desktop")
         font: Tokens.font.body.builders.medium.weight(Font.Medium).build()
@@ -221,7 +221,7 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.leftMargin: Tokens.padding.extraSmall
         Layout.rightMargin: Tokens.padding.extraSmall
-        Layout.topMargin: Tokens.padding.extraSmall
+        Layout.topMargin: 0
         Layout.bottomMargin: Tokens.padding.extraSmall
         spacing: Tokens.spacing.extraSmall
 
@@ -233,9 +233,53 @@ ColumnLayout {
 
         StyledText {
             Layout.fillWidth: true
-            text: qsTr("Internet route")
-            elide: Text.ElideRight
-            font: Tokens.font.body.builders.small.weight(Font.Medium).build()
+            text: qsTr("Route")
+            color: Colours.palette.m3onSurface
+            font: Tokens.font.body.small
+        }
+
+        Item {
+            id: routePicker
+
+            implicitWidth: routePickerRow.implicitWidth
+            implicitHeight: routePickerRow.implicitHeight
+
+            RowLayout {
+                id: routePickerRow
+
+                anchors.fill: parent
+                spacing: 2
+
+                StyledText {
+                    text: RemoteDesktop.RemoteStatus.exitNodeActive
+                        ? RemoteDesktop.RemoteStatus.exitNodeName
+                        : qsTr("Direct")
+                    color: Colours.palette.m3onSurfaceVariant
+                    font: Tokens.font.body.small
+                }
+
+                MaterialIcon {
+                    text: "expand_more"
+                    color: Colours.palette.m3onSurfaceVariant
+                    fontStyle: Tokens.font.icon.small
+                }
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                enabled: !RemoteDesktop.RemoteStatus.exitNodeChanging
+                cursorShape: Qt.PointingHandCursor
+                onClicked: routeMenu.expanded = !routeMenu.expanded
+            }
+
+            Menu {
+                id: routeMenu
+
+                attachTo: routePicker
+                items: root.exitMenuItems
+                active: directExitItem
+                onItemSelected: item => RemoteDesktop.RemoteStatus.setExitNode(item.nodeId)
+            }
         }
 
         ActionButton {
@@ -248,29 +292,6 @@ ColumnLayout {
                 ? qsTr("Disable exit node")
                 : qsTr("Enable exit node")
             onClicked: RemoteDesktop.RemoteStatus.toggleExitNode()
-        }
-
-        SplitButton {
-            id: routeSelector
-
-            horizontalPadding: Tokens.padding.extraSmall
-            verticalPadding: 0
-            minLeftWidth: 64
-            disabled: RemoteDesktop.RemoteStatus.exitNodeChanging
-            fallbackIcon: "public"
-            fallbackText: qsTr("Direct")
-            menuItems: root.exitMenuItems
-            active: directExitItem
-
-            // Keep routing controls visually neutral. Active routing state is
-            // communicated by the selected node text, not a coloured pill.
-            colour: "transparent"
-            textColour: Colours.palette.m3onSurface
-            disabledColour: "transparent"
-            disabledTextColour: Colours.palette.m3onSurfaceVariant
-
-            stateLayer.onClicked: routeSelector.expanded = !routeSelector.expanded
-            menu.onItemSelected: item => RemoteDesktop.RemoteStatus.setExitNode(item.nodeId)
         }
     }
 

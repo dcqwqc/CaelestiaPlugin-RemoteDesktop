@@ -15,35 +15,22 @@ ColumnLayout {
 
     required property PopoutState popouts
 
-    // Up to four actions (switch, leave, wake, SSH) need room alongside a host
-    // name. Keep the action strip visible rather than clipping its final icon.
-    width: 344
-    spacing: Tokens.spacing.small
+    width: 336
+    spacing: Tokens.spacing.extraSmall
 
-    component ActionButton: StyledRect {
+    component ActionButton: IconButton {
         id: btn
 
-        required property string icon
+        required property string hint
+        property bool accent: false
 
-        signal clicked
+        type: accent ? IconButton.Tonal : IconButton.Text
+        font: Tokens.font.icon.small
+        shapeMorph: false
 
-        implicitWidth: implicitHeight
-        implicitHeight: btnIcon.implicitHeight + Tokens.padding.extraSmall
-
-        radius: Tokens.rounding.full
-        color: "transparent"
-        opacity: enabled ? 1 : 0.35
-
-        StateLayer {
-            disabled: !btn.enabled
-            onClicked: btn.clicked()
-        }
-
-        MaterialIcon {
-            id: btnIcon
-
-            anchors.centerIn: parent
-            text: btn.icon
+        Tooltip {
+            target: btn
+            text: btn.hint
         }
     }
 
@@ -53,115 +40,127 @@ ColumnLayout {
         required property var device
 
         readonly property bool online: !!device.online
-        // The session, if there is one, is with the peer -- so only the peer's
-        // row reports it. `viewing` is our client on their screen; `shared` is
-        // their client on ours.
         readonly property bool isPeer: device.id === RemoteDesktop.RemoteStatus.peerId
         readonly property bool viewing: isPeer && RemoteDesktop.RemoteStatus.viewing
         readonly property bool shared: isPeer && RemoteDesktop.RemoteStatus.shared
+        readonly property bool hasSession: viewing || shared
 
         Layout.fillWidth: true
-        Layout.bottomMargin: Tokens.spacing.medium
+        Layout.leftMargin: Tokens.padding.extraSmall
+        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.topMargin: Tokens.padding.extraSmall
+        Layout.bottomMargin: Tokens.padding.extraSmall
         spacing: Tokens.spacing.small
 
         MaterialIcon {
             text: "computer"
+            fontStyle: Tokens.font.icon.small
+            color: hostRow.online
+                ? Colours.palette.m3onSurface
+                : Colours.palette.m3onSurfaceVariant
         }
 
         ColumnLayout {
             Layout.fillWidth: true
-            // Let long tailnet names elide; their implicit text width must not
-            // force the action buttons past the popout's right edge.
-            Layout.minimumWidth: 0
+            Layout.minimumWidth: 72
             spacing: 0
 
             StyledText {
                 Layout.fillWidth: true
                 text: hostRow.device.name
                 elide: Text.ElideRight
+                font: Tokens.font.body.builders.small.weight(Font.Medium).build()
             }
 
-            StyledText {
-                text: !hostRow.online ? qsTr("Offline") : hostRow.viewing ? qsTr("Connected") : hostRow.shared ? qsTr("Viewing this screen") : qsTr("Online")
-                color: !hostRow.online ? Colours.palette.m3error : (hostRow.viewing || hostRow.shared) ? Colours.palette.m3primary : Colours.palette.m3onSurfaceVariant
-                font: Tokens.font.body.small
+            RowLayout {
+                spacing: Tokens.spacing.extraSmall
+
+                StyledRect {
+                    implicitWidth: 6
+                    implicitHeight: 6
+                    radius: 3
+                    color: !hostRow.online
+                        ? Colours.palette.m3error
+                        : hostRow.hasSession
+                            ? Colours.palette.m3primary
+                            : Colours.palette.m3onSurfaceVariant
+                }
+
+                StyledText {
+                    text: !hostRow.online
+                        ? qsTr("Offline")
+                        : hostRow.viewing
+                            ? qsTr("Connected")
+                            : hostRow.shared
+                                ? qsTr("Sharing")
+                                : qsTr("Online")
+                    color: !hostRow.online
+                        ? Colours.palette.m3error
+                        : hostRow.hasSession
+                            ? Colours.palette.m3primary
+                            : Colours.palette.m3onSurfaceVariant
+                    font: Tokens.font.body.small
+                }
             }
         }
 
         RowLayout {
-            spacing: Tokens.spacing.small
+            Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+            spacing: 0
 
             ActionButton {
-                // Going to the session and leaving it are separate intentions,
-                // so they are separate buttons rather than one control that
-                // changes meaning underneath you. This is the going half: it
-                // connects when nothing is up and simply takes you there when
-                // something is.
-                //
-                // Every peer gets it now. It used to be the desktop's alone,
-                // back when the stream only ran one way and the workspace it
-                // lives on existed on one machine; both hosts serve and both
-                // consume, so either can be the one being looked at.
-                // Hidden rather than dimmed while the host is down: there is
-                // nothing to connect to, and a row of dead controls under an
-                // "Offline" label reads as the integration being broken.
-                visible: hostRow.device.canRemoteDesktop && !hostRow.device.isSelf
-                enabled: hostRow.online && !hostRow.shared
+                visible: hostRow.device.canRemoteDesktop
+                disabled: !hostRow.online || hostRow.shared
+                accent: hostRow.viewing
                 icon: hostRow.viewing ? "desktop_windows" : "link"
+                hint: hostRow.viewing ? qsTr("Open remote desktop") : qsTr("Connect")
                 onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "open"])
             }
 
             ActionButton {
-                // The leaving half. It hands the screen back and leaves the
-                // session standing, so coming back is a workspace switch rather
-                // than a reconnect; pressing it again once you are already away
-                // is what actually tears the session down.
-                //
-                // It is also the only control offered while the peer is the one
-                // watching: there is no local client to step away from, so
-                // kagami-remote forwards the teardown to the machine holding it.
-                visible: hostRow.viewing || hostRow.shared
+                visible: hostRow.hasSession
                 icon: "link_off"
+                hint: qsTr("Disconnect")
                 onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "leave"])
             }
 
             ActionButton {
-                // Every remote device gets a Wake slot. It is enabled only when
-                // we know its LAN MAC address; Tailscale deliberately does not
-                // expose MACs, so guessing would send an invalid magic packet.
-                visible: !hostRow.device.isSelf
-                // Sending a magic packet to an awake host is harmless. Keeping the
-                // control available makes the configured Wake-on-LAN capability
-                // discoverable instead of making it appear to vanish with status.
-                enabled: hostRow.device.canWake
+                visible: hostRow.device.canWake
                 icon: "bolt"
+                hint: qsTr("Wake")
                 onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "wake"])
             }
 
             ActionButton {
-                // Same: an unreachable endpoint offers nothing, so it goes
-                // away instead of sitting there greyed.
                 visible: hostRow.device.canSsh
-                enabled: hostRow.online
+                disabled: !hostRow.online || !hostRow.device.sshAvailable
                 icon: "terminal"
+                hint: qsTr("Open terminal")
                 onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.actionHost, "ssh"])
             }
         }
     }
 
     StyledText {
-        Layout.topMargin: Tokens.padding.medium
-        Layout.rightMargin: Tokens.padding.extraSmall
-        text: qsTr("Remote")
+        Layout.topMargin: Tokens.padding.small
+        Layout.bottomMargin: Tokens.padding.extraSmall
+        Layout.leftMargin: Tokens.padding.extraSmall
+        text: qsTr("Remote desktop")
         font: Tokens.font.body.builders.medium.weight(Font.Medium).build()
     }
 
     Repeater {
-        model: RemoteDesktop.RemoteStatus.devices.filter(device => !device.isSelf)
+        model: RemoteDesktop.RemoteStatus.devices.filter(device =>
+            !device.isSelf
+            && (
+                device.canRemoteDesktop
+                || device.canWake
+                || (device.canSsh && device.sshAvailable)
+            )
+        )
 
         delegate: HostRow {
             required property var modelData
-
             device: modelData
         }
     }

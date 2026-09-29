@@ -17,7 +17,7 @@ ColumnLayout {
 
     // Up to four actions (switch, leave, wake, SSH) need room alongside a host
     // name. Keep the action strip visible rather than clipping its final icon.
-    width: 372
+    width: 344
     spacing: Tokens.spacing.small
 
     component ActionButton: StyledRect {
@@ -82,7 +82,7 @@ ColumnLayout {
             }
 
             StyledText {
-                text: hostRow.device.isSelf ? qsTr("This device") : !hostRow.online ? qsTr("Offline") : hostRow.viewing ? qsTr("Online — connected") : hostRow.shared ? qsTr("Online — viewing this screen") : qsTr("Online")
+                text: !hostRow.online ? qsTr("Offline") : hostRow.viewing ? qsTr("Connected") : hostRow.shared ? qsTr("Viewing this screen") : qsTr("Online")
                 color: !hostRow.online ? Colours.palette.m3error : (hostRow.viewing || hostRow.shared) ? Colours.palette.m3primary : Colours.palette.m3onSurfaceVariant
                 font: Tokens.font.body.small
             }
@@ -105,7 +105,8 @@ ColumnLayout {
                 // Hidden rather than dimmed while the host is down: there is
                 // nothing to connect to, and a row of dead controls under an
                 // "Offline" label reads as the integration being broken.
-                visible: hostRow.device.canRemoteDesktop && !hostRow.device.isSelf && hostRow.online
+                visible: hostRow.device.canRemoteDesktop && !hostRow.device.isSelf
+                enabled: hostRow.online && !hostRow.shared
                 icon: hostRow.viewing ? "desktop_windows" : "link"
                 onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "open"])
             }
@@ -140,7 +141,8 @@ ColumnLayout {
             ActionButton {
                 // Same: an unreachable endpoint offers nothing, so it goes
                 // away instead of sitting there greyed.
-                visible: hostRow.device.canSsh && hostRow.device.sshAvailable
+                visible: hostRow.device.canSsh
+                enabled: hostRow.online
                 icon: "terminal"
                 onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.actionHost, "ssh"])
             }
@@ -155,7 +157,7 @@ ColumnLayout {
     }
 
     Repeater {
-        model: RemoteDesktop.RemoteStatus.devices
+        model: RemoteDesktop.RemoteStatus.devices.filter(device => !device.isSelf)
 
         delegate: HostRow {
             required property var modelData

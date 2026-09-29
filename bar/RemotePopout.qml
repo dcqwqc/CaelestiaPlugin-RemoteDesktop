@@ -221,43 +221,28 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.leftMargin: Tokens.padding.extraSmall
         Layout.rightMargin: Tokens.padding.extraSmall
-        Layout.topMargin: Tokens.padding.small
+        Layout.topMargin: Tokens.padding.extraSmall
         Layout.bottomMargin: Tokens.padding.extraSmall
-        spacing: Tokens.spacing.small
+        spacing: Tokens.spacing.extraSmall
 
         MaterialIcon {
-            text: RemoteDesktop.RemoteStatus.exitNodeActive ? "vpn_lock" : "route"
+            text: "route"
             fontStyle: Tokens.font.icon.small
-            color: RemoteDesktop.RemoteStatus.exitNodeActive
-                ? Colours.palette.m3primary
-                : Colours.palette.m3onSurfaceVariant
+            color: Colours.palette.m3onSurfaceVariant
         }
 
-        ColumnLayout {
+        StyledText {
             Layout.fillWidth: true
-            spacing: 0
-
-            StyledText {
-                text: qsTr("Internet route")
-                font: Tokens.font.body.builders.small.weight(Font.Medium).build()
-            }
-
-            StyledText {
-                Layout.fillWidth: true
-                text: RemoteDesktop.RemoteStatus.exitNodeActive
-                    ? qsTr("All traffic via %1").arg(RemoteDesktop.RemoteStatus.exitNodeName)
-                    : qsTr("Direct connection")
-                color: Colours.palette.m3onSurfaceVariant
-                elide: Text.ElideRight
-                font: Tokens.font.label.small
-            }
+            text: qsTr("Internet route")
+            elide: Text.ElideRight
+            font: Tokens.font.body.builders.small.weight(Font.Medium).build()
         }
 
         ActionButton {
             disabled: RemoteDesktop.RemoteStatus.exitNodeChanging
                 || (!RemoteDesktop.RemoteStatus.exitNodeActive
                     && RemoteDesktop.RemoteStatus.exitNodes.length === 0)
-            accent: RemoteDesktop.RemoteStatus.exitNodeActive
+            accent: false
             icon: "power_settings_new"
             hint: RemoteDesktop.RemoteStatus.exitNodeActive
                 ? qsTr("Disable exit node")
@@ -268,15 +253,22 @@ ColumnLayout {
         SplitButton {
             id: routeSelector
 
-            horizontalPadding: Tokens.padding.small
-            verticalPadding: Tokens.padding.extraSmall
-            minLeftWidth: 76
-            type: SplitButton.Tonal
+            horizontalPadding: Tokens.padding.extraSmall
+            verticalPadding: 0
+            minLeftWidth: 64
             disabled: RemoteDesktop.RemoteStatus.exitNodeChanging
             fallbackIcon: "public"
             fallbackText: qsTr("Direct")
             menuItems: root.exitMenuItems
             active: directExitItem
+
+            // Keep routing controls visually neutral. Active routing state is
+            // communicated by the selected node text, not a coloured pill.
+            colour: "transparent"
+            textColour: Colours.palette.m3onSurface
+            disabledColour: "transparent"
+            disabledTextColour: Colours.palette.m3onSurfaceVariant
+
             stateLayer.onClicked: routeSelector.expanded = !routeSelector.expanded
             menu.onItemSelected: item => RemoteDesktop.RemoteStatus.setExitNode(item.nodeId)
         }

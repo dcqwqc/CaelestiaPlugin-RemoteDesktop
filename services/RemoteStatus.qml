@@ -11,7 +11,7 @@ Singleton {
     // The bar is started by the systemd user manager, whose PATH does not
     // carry ~/.local/bin, so `kagami-remote` cannot be resolved by name from
     // here. The Hyprland keybind spells the path out for the same reason.
-    readonly property string bin: `${Quickshell.env("HOME")}/.local/bin/kagami-remote`
+    readonly property string bin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/remote-desktop`
     readonly property string exitNodeBin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/tailscale-exit-node`
 
     // Tailscale exit-node state. Selecting one routes all ordinary internet

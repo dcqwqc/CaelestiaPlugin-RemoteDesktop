@@ -1,0 +1,812 @@
+#!/usr/bin/env bash
+# Single entry point for remote-host actions: the Moonlight remote-desktop
+# workspace (open/toggle/leave/freeze), Wake-on-LAN, and SSH.
+# Shared by the SUPER+ALT+T keybind and the Caelestia bar's Remote popout.
+set -euo pipefail
+
+# Which machines exist, what they are called, and their NIC MACs. That is
+# per-installation identity rather than configuration, so it lives in an
+# untracked local file instead of in this repository -- see hosts.conf.example.
+#
+#     <role> <hostname> [mac]
+#
+# Roles name machines, not directions. Both hosts run Sunshine and both run
+# Moonlight, so either can be the one being looked at; `desktop` and `laptop`
+# are just stable handles for the two boxes. The direction of a session is
+# decided per invocation by which host is passed as the target.
+declare -A ROLE_HOST=() HOST_MAC=()
+remote_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/caelestia/remote-desktop"
+hosts_conf="$remote_config_dir/hosts.conf"
+legacy_hosts_conf="${XDG_CONFIG_HOME:-$HOME/.config}/kagami/hosts.conf"
+if [[ ! -e $hosts_conf && -r $legacy_hosts_conf ]]; then
+    mkdir -p "$remote_config_dir"
+    cp -p "$legacy_hosts_conf" "$hosts_conf" 2>/dev/null || hosts_conf="$legacy_hosts_conf"
+fi
+if [[ -r $hosts_conf ]]; then
+    while read -r role name mac _; do
+        [[ -z ${role:-} || $role == \#* || -z ${name:-} ]] && continue
+        ROLE_HOST[$role]=$name
+        [[ -n ${mac:-} ]] && HOST_MAC[$name]=$mac
+    done < "$hosts_conf"
+fi
+
+# New Kagami is a plugin, not the owner of this backend. If it has linked a
+# peer, use that peer as a zero-config Remote Desktop target. The legacy
+# hosts.conf still wins for named roles and Wake-on-LAN MAC addresses.
+kagami_plugin_config="${XDG_CONFIG_HOME:-$HOME/.config}/caelestia/plugins.json"
+if [[ -r $kagami_plugin_config ]] && command -v jq >/dev/null; then
+    linked=$(jq -r '.settings["dcqwqc/kagami"].peerTarget // empty' "$kagami_plugin_config" 2>/dev/null || true)
+    linked=${linked#*@}
+    linked=${linked%%.*}
+    if [[ -n $linked ]]; then
+        ROLE_HOST[peer]=$linked
+    fi
+fi
+
+# `--hosts` answers "which machines are configured, and which can be woken"
+# without naming a target, because that is exactly the question the bar's Remote
+# panel used to answer with a hardcoded list of two hostnames. Handled before
+# target validation, since it has no target.
+if [[ ${1:-} == --hosts ]]; then
+    printf '{"self":"%s","hosts":[' "$(hostname -s | tr '[:upper:]' '[:lower:]')"
+    sep=
+    for role in "${!ROLE_HOST[@]}"; do
+        name=${ROLE_HOST[$role]}
+        printf '%s{"role":"%s","name":"%s","mac":"%s"}' \
+            "$sep" "$role" "$name" "${HOST_MAC[$name]:-}"
+        sep=,
+    done
+    printf ']}\n'
+    exit 0
+fi
+
+target=${1:-}
+mode=${2:-open}
+# Third positional, used only by the subcommands that carry a value (kb-adopt).
+arg=${3:-}
+local_host=$(hostname -s | tr '[:upper:]' '[:lower:]')
+
+# `kagami-remote desktop toggle` and `kagami-remote <its-hostname> toggle` are the
+# same request; keybinds use the role so they need no local knowledge.
+# Guard the subscript: an empty target is a usage error, handled just below,
+# and ${ROLE_HOST[]} is a hard bash error rather than an empty expansion.
+if [[ -n $target && -n ${ROLE_HOST[$target]:-} ]]; then
+    target=${ROLE_HOST[$target]}
+fi
+
+# `peer` is the other machine, whichever this one is. The compositor config is
+# identical on both hosts precisely because it can say `peer` and mean "stream
+# the box I am not sitting at" without knowing which box that is.
+if [[ $target == peer ]]; then
+    target=
+    for name in "${ROLE_HOST[@]}"; do
+        [[ $name == "$local_host" ]] && continue
+        target=$name
+        break
+    done
+    if [[ -z $target ]]; then
+        echo "remote-desktop: no peer for $local_host in $hosts_conf" >&2
+        exit 2
+    fi
+fi
+
+# Settings owned by the RemoteDesktop plugin, when it is installed. The shell
+# persists them into plugins.json, and reading them here is what stops the
+# Plugins page from governing only half the ways into a session: the SUPER+ALT+T
+# keybind comes through this script too.
+#
+# Every value stays optional. A desk with no plugin, or a key the page has never
+# written, falls through to the defaults below exactly as before.
+plugin_id="dcqwqc/remotedesktop"
+plugin_config="${XDG_CONFIG_HOME:-$HOME/.config}/caelestia/plugins.json"
+plugin_setting() {
+    [[ -r $plugin_config ]] || return 1
+    local value
+    # `// empty` would be wrong here: jq treats `false` as null, so a switch
+    # the user had turned *off* would read as unset and fall back to its
+    # default of on. Ask whether the key exists instead.
+    value=$(jq -r --arg id "$plugin_id" --arg key "$1" '
+        (.settings[$id] // {}) as $s
+        | if ($s | has($key)) then $s[$key] else empty end
+    ' "$plugin_config" 2>/dev/null) || return 1
+    [[ -n $value ]] || return 1
+    printf '%s' "$value"
+}
+
+# Seconds the remote workspace may sit unwatched before the stream is frozen.
+#
+# This is the whole cost of switching away and back. Below it a return is just a
+# workspace change, because the client is still connected and the frame is
+# already there. Above it the client is gone and coming back is a cold start:
+# Moonlight's own boot -- Qt, SDL, VAAPI, its codec probe -- dominates that, and
+# the stream itself is about a second of it. Sixty seconds was short enough that
+# reading something on the other workspace fell off the end, which made every
+# other switch feel like a connect. Five minutes covers actually working on both
+# machines and still frees the wifi from a desktop nobody has looked at all
+# afternoon.
+freeze_delay=$(plugin_setting freezeDelay || printf 300)
+# Re-invoked by the freeze timer, so spell the path out rather than trusting
+# $0 (Hyprland's exec and the keybind reach this script differently).
+self="$(readlink -f "$0")"
+
+if [[ -z $target ]]; then
+    echo "usage: remote-desktop <peer|desktop|laptop|hostname> [open|toggle|leave|stop|freeze|ws-changed|wake|ssh|status|status-local|capture-size|kb-adopt <layout>|kb-restore]" >&2
+    exit 2
+fi
+
+if [[ $target == "$local_host" ]]; then
+    echo "remote-desktop: $target is this machine" >&2
+    exit 2
+fi
+
+# Caelestia's command dispatcher does not always pass the compositor signature
+# into its child shell. Resolve the sole live Hyprland instance when needed.
+if [[ -z ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
+    export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-"/run/user/$(id -u)"}
+    export HYPRLAND_INSTANCE_SIGNATURE="$(find "$XDG_RUNTIME_DIR/hypr" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | head -n 1)"
+fi
+
+# Best-effort magic packet. Wake-on-LAN is L2 broadcast, so this only works
+# when the target shares a local subnet with this host; it no-ops otherwise.
+send_wol() {
+    local mac=$1 hex=${1//:/}
+    python3 - "$hex" <<'PY'
+import socket, sys
+hexmac = sys.argv[1]
+payload = bytes.fromhex("ff" * 6 + hexmac * 16)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+try:
+    s.sendto(payload, ("255.255.255.255", 9))
+except OSError:
+    pass
+PY
+}
+
+# Use Tailscale's DNS name for host-to-host control. It is both routable over
+# the tailnet and matches the identity stored in known_hosts (unlike a short
+# hostname such as the laptop's short name).
+tailscale_dns() {
+    tailscale status --json 2>/dev/null | jq -r --arg host "$1" '
+        ([.Self] + ((.Peer // {}) | to_entries | map(.value)))[]
+        | select(.HostName == $host) | .DNSName
+    ' | sed -n '1{s/\.$//;p;}'
+}
+
+state_dir="${XDG_RUNTIME_DIR:-/tmp}/remote-desktop"
+return_file="$state_dir/return-workspace"
+timer_file="$state_dir/freeze.pid"
+mkdir -p "$state_dir"
+
+# The pids of Moonlight clients that are actually streaming, and the host they
+# are streaming from.
+#
+# The bare process name proves nothing: `moonlight` on its own is the GUI, and
+# `moonlight quit <host>` is a one-shot that shares argv[0] with a real session
+# and can hang for days when the far end never answers. A desktop that had both
+# lying around therefore reported itself as connected to a machine it had never
+# streamed. Only `moonlight stream <host> <app>` is a session, so match that and
+# read the far end out of the client's own command line -- which cannot go stale
+# the way a state file outlives the process it describes.
+stream_pids() {
+    pgrep -u "$(id -u)" -f 'moonlight +stream ' 2>/dev/null || true
+}
+
+streaming_host() {
+    pgrep -u "$(id -u)" -a -f 'moonlight +stream ' 2>/dev/null \
+        | awk '{ for (i = 2; i < NF; i++) if ($i == "stream") { print $(i + 1); exit } }'
+}
+
+# A Moonlight session running *here* means this machine is the viewer.
+stream_active() {
+    [[ -n $(streaming_host) ]]
+}
+
+# ...and it is watching this host.
+watching() {
+    [[ $(streaming_host) == "$1" ]]
+}
+
+# Ask the far end the same question about itself. Sessions are symmetric now,
+# so "is anything up between us" has two halves and only the other machine can
+# answer the second one.
+#
+# KAGAMI_REMOTE_FORWARDED stops the two halves from bouncing: a forwarded call
+# answers about its own machine and never hops again. Without it two idle hosts
+# would forward `stop` to each other forever.
+on_peer() {
+    local dns
+    dns=$(tailscale_dns "$target")
+    [[ -n $dns ]] || return 1
+    ssh -o BatchMode=yes -o ConnectTimeout=3 "$dns" \
+        "KAGAMI_REMOTE_FORWARDED=1 $HOME/.local/share/caelestia/plugins/remote-desktop/scripts/remote-desktop $local_host $*"
+}
+
+# The layout is the *client's* property, not the host's. Moonlight sends key
+# positions, and the machine being streamed decodes them with its own XKB
+# layout -- so a German keyboard driving a US host types the US letter printed
+# on the wrong physical key. Nothing about that is fixable on this side: the
+# host has to interpret the positions the way the keyboard in your hands is
+# labelled. It adopts the client's layout on the injected keyboard alone (see
+# remote_kb_device) and puts its own back afterwards, so the host's real
+# keyboard is never touched.
+#
+# Deliberately not hard-coded to de/us. Whatever the viewing machine's main
+# keyboard currently reports is what gets sent, so a third layout or a changed
+# one needs no edit here.
+local_kb_layout() {
+    hyprctl -j devices 2>/dev/null | jq -r '.keyboards[] | select(.main) | .layout' | head -1
+}
+
+# This machine's own layout, from the one place that is authoritative about it:
+# the templated Hyprland input config. No state file to go stale if a session
+# is killed rather than closed.
+own_kb_layout() {
+    sed -n 's/^[[:space:]]*kb_layout[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/hypr/hyprland/input.lua" 2>/dev/null | head -1
+}
+
+# Sunshine does not type on the host's keyboard -- it injects through a uinput
+# device of its own, which Hyprland sees as an ordinary extra keyboard named
+# "keyboard-passthrough". That device is the only thing whose layout should
+# follow the client.
+#
+# Setting `input:kb_layout` globally, as this did at first, changed the layout
+# of the machine's *physical* keyboard too: the laptop sat there in English
+# under German keys for as long as a session was open. Per-device is the whole
+# fix -- both keyboards are then correct at once, each decoding the hands that
+# are actually on it.
+#
+# Detected rather than named, with an override for a Sunshine build that labels
+# its devices differently.
+remote_kb_device() {
+    if [[ -n ${KAGAMI_REMOTE_KB_DEVICE:-} ]]; then
+        printf '%s' "$KAGAMI_REMOTE_KB_DEVICE"
+        return 0
+    fi
+    hyprctl -j devices 2>/dev/null | jq -r '
+        [.keyboards[] | select(.name | test("passthrough"))] | first | .name // empty'
+}
+
+# `hyprctl keyword` is rejected against a Lua config; eval is the channel that
+# reaches it. Both values are validated rather than interpolated blindly -- the
+# layout arrives over ssh, and the device name goes into a Lua string.
+set_kb_layout() {
+    local layout=$1 device
+    [[ $layout =~ ^[a-z]{2}(,[a-z]{2})*$ ]] || return 1
+    device=$(remote_kb_device)
+    [[ $device =~ ^[a-zA-Z0-9_.:-]+$ ]] || return 1
+    hyprctl eval "hl.device({ name = \"$device\", kb_layout = \"$layout\" })" >/dev/null 2>&1
+}
+
+peer_adopt_layout() {
+    [[ -z ${KAGAMI_REMOTE_FORWARDED:-} ]] || return 0
+    [[ $(plugin_setting followKeyboardLayout || printf true) == true ]] || return 0
+    local layout
+    layout=$(local_kb_layout) || return 0
+    [[ -n $layout ]] || return 0
+    on_peer kb-adopt "$layout" >/dev/null 2>&1 || true
+}
+
+peer_restore_layout() {
+    [[ -z ${KAGAMI_REMOTE_FORWARDED:-} ]] || return 0
+    on_peer kb-restore >/dev/null 2>&1 || true
+}
+
+case "$mode" in
+    wake)
+        if [[ -z ${HOST_MAC[$target]+_} ]]; then
+            echo "remote-desktop: no MAC for $target; add one to $hosts_conf (see hosts.conf.example)" >&2
+            exit 2
+        fi
+        send_wol "${HOST_MAC[$target]}"
+        exit 0
+        ;;
+    ssh)
+        # The tray exposes this only for peers whose structured Tailscale
+        # status advertises SSH. Keep the target as one argument so MagicDNS
+        # names are passed through without shell interpolation.
+        nohup kitty ssh "$target" >/dev/null 2>&1 &
+        exit 0
+        ;;
+    kb-adopt)
+        set_kb_layout "$arg" || {
+            echo "remote-desktop: refusing layout '$arg'" >&2
+            exit 2
+        }
+        exit 0
+        ;;
+    kb-restore)
+        set_kb_layout "$(own_kb_layout)" || exit 0
+        exit 0
+        ;;
+    capture-size)
+        # The size of the monitor Sunshine actually captures here, so the far
+        # end can encode 1:1 with what is on this screen instead of guessing
+        # from its own panel. output_name is the authority; a single-head host
+        # that never set one falls back to the focused monitor.
+        sunshine_output=$(sed -n 's/^[[:space:]]*output_name[[:space:]]*=[[:space:]]*//p' \
+            "${XDG_CONFIG_HOME:-$HOME/.config}/sunshine/sunshine.conf" 2>/dev/null | tail -1)
+        hyprctl -j monitors 2>/dev/null | jq -r --arg out "${sunshine_output:-}" '
+            (([.[] | select($out != "" and .name == $out)] | first)
+             // ([.[] | select(.focused)] | first)
+             // .[0]) as $m
+            | if $m and $m.width > 0 then "\($m.width)x\($m.height)" else empty end
+        ' 2>/dev/null
+        exit 0
+        ;;
+    status-local)
+        # The non-recursing half of `status`, and the only thing a forwarded
+        # call ever runs. Reports solely on this machine's own client.
+        if watching "$target"; then
+            echo viewing
+        else
+            echo disconnected
+        fi
+        exit 0
+        ;;
+    status)
+        # Three answers, because a link between two machines has a direction:
+        #   viewing      -- our Moonlight is showing $target's screen here
+        #   shared       -- $target's Moonlight is showing *our* screen there
+        #   disconnected -- neither
+        if watching "$target"; then
+            echo viewing
+        elif [[ -z ${KAGAMI_REMOTE_FORWARDED:-} ]] && [[ $(on_peer status-local 2>/dev/null) == viewing ]]; then
+            echo shared
+        else
+            echo disconnected
+        fi
+        exit 0
+        ;;
+esac
+
+# The remote desktop gets a workspace of its own instead of being a fullscreen
+# window on whichever workspace happened to be active when it started. Freezing
+# is defined as "the remote workspace is not the one being looked at", and that
+# is only a well-formed question once the session has a workspace to be on.
+remote_workspace=remote
+workspace_selector="name:$remote_workspace"
+
+active_workspace() {
+    local name
+    name=$(hyprctl -j activeworkspace | jq -r '.name // empty' 2>/dev/null)
+    printf '%s' "${name:-1}"
+}
+
+host=$target
+app=Desktop
+
+# Encode at the size the far end actually has on screen, not the size of the
+# panel it will be shown on.
+#
+# Asking for the local monitor meant a 1920x1080 desktop was upscaled to this
+# laptop's 2880x1800 before being encoded: 2.5x the pixels, none of them real,
+# and the same bitrate spread across all of them. That is what made the picture
+# look soft and blocky. Sizing to the source keeps the encode 1:1 and lets
+# Moonlight do the scaling locally, where it is free. Letterboxing on a
+# differently-shaped panel is not a defect to code around -- it is the shape of
+# the screen being sent.
+local_res=$(hyprctl -j monitors 2>/dev/null | jq -r '
+    ((([.[] | select(.focused and .width > 0 and .height > 0)] | first))
+     // ([.[] | select(.width > 0)] | first)) as $m
+    | if $m then "\($m.width)x\($m.height)" else empty end
+' 2>/dev/null)
+remote_res=$(on_peer capture-size 2>/dev/null | tr -dc '0-9x')
+
+# Do NOT trim the source down to this screen's size, tempting as it looks.
+#
+# mirai is a 2880x1800 panel at scale 2, so its desktop is laid out at 1440x900
+# and rendered at 2x. Pre-scaling that to 1728x1080 for the encoder threw away
+# the supersampling *and* then subsampled what was left: 4:2:0 stores colour at
+# quarter resolution, so every glyph edge came out with a purple/cyan fringe.
+# That is the blur, and no bitrate fixes it -- the detail is gone before the
+# encoder runs. (4:4:4 would, but mirai's Intel VAAPI refuses it: "Your host PC
+# doesn't support YUV 4:4:4 streaming".)
+#
+# Sent at native size, 4:2:0 chroma at 2880x1800 is still full chroma for a
+# 1440x900 desktop, and the viewer's GPU does the fit on decoded frames where
+# scaling is cheap and good. The ceiling only stops something absurd.
+resolution=$(python3 - "$remote_res" "$local_res" <<'PY_RES'
+import re, sys
+
+def parse(value):
+    match = re.fullmatch(r"(\d+)x(\d+)", value or "")
+    return (int(match[1]), int(match[2])) if match else None
+
+source = parse(sys.argv[1])
+sink = parse(sys.argv[2])
+if not source:
+    print(sys.argv[2] if sink else "1920x1080")
+    raise SystemExit
+width, height = source
+CEILING = (3840, 2160)
+if width > CEILING[0] or height > CEILING[1]:
+    scale = min(CEILING[0] / width, CEILING[1] / height)
+    # Even dimensions: chroma subsampling needs them, and an odd size makes
+    # some encoders quietly pad.
+    width, height = int(width * scale) // 2 * 2, int(height * scale) // 2 * 2
+print(f"{width}x{height}")
+PY_RES
+)
+fps=$(plugin_setting fps || printf 60)
+
+# Moonlight's own defaults work out to roughly 0.0104 kbps per pixel at 60fps:
+# 10 Mbps at 720p, 20 at 1080p, 40 at 1440p, 80 at 4K. The flat 5000 this used
+# to send was a quarter of what 1080p60 wants -- and less than a tenth of what
+# the 2880x1800 it was actually requesting wants. Both machines share a LAN and
+# hold a direct tailnet route, so there is bandwidth to spend. Override with
+# KAGAMI_REMOTE_BITRATE on a link where there is not.
+plugin_bitrate=$(plugin_setting bitrate || printf 0)
+[[ $plugin_bitrate =~ ^[0-9]+$ ]] || plugin_bitrate=0
+(( plugin_bitrate > 0 )) && : "${KAGAMI_REMOTE_BITRATE:=$plugin_bitrate}"
+bitrate=${KAGAMI_REMOTE_BITRATE:-$(python3 - "$resolution" "$fps" <<'PY_RATE'
+import re, sys
+match = re.fullmatch(r"(\d+)x(\d+)", sys.argv[1] or "")
+width, height = (int(match[1]), int(match[2])) if match else (1920, 1080)
+fps = int(sys.argv[2] or 60)
+kbps = width * height * fps / 60 * 0.0104
+print(max(5000, min(60000, round(kbps / 500) * 500)))
+PY_RATE
+)}
+
+quit_stream() {
+    # `moonlight quit` can block indefinitely while the stream is active.
+    # Terminating the local client cleanly tears down the Sunshine session and
+    # makes Disconnect deterministic.
+    #
+    # Addressed by pid rather than by name: the streaming client is the only
+    # thing Disconnect is about, and killing every `moonlight` closed an idle
+    # GUI window that had nothing to do with the session.
+    local pids
+    pids=$(stream_pids)
+    [[ -n $pids ]] || return 0
+    # shellcheck disable=SC2086
+    kill -TERM $pids >/dev/null 2>&1 || true
+    for _ in {1..20}; do
+        stream_active || return 0
+        sleep 0.05
+    done
+    pids=$(stream_pids)
+    # shellcheck disable=SC2086
+    [[ -n $pids ]] && kill -KILL $pids >/dev/null 2>&1 || true
+}
+
+moonlight_window='class:^com\\.moonlight_stream\\.Moonlight$'
+
+# Get the client off the workspace you are sitting on the moment it maps.
+# Moonlight puts its own connection UI up several seconds before there is a
+# picture behind it, and leaving that in front of you is what made Connect look
+# like "it opened Moonlight and now I am watching a loading screen".
+#
+# `follow = false` moves it without taking you along. The window rule's
+# render_unfocused is the other half and is not optional: a window on no
+# visible workspace gets no frame callbacks, and Moonlight's render loop waits
+# on those -- it decodes the first frame and then stops pulling the stream
+# entirely, which looks exactly like a frozen picture with a working keyboard,
+# because input never went through that loop.
+park_stream() {
+    local target_workspace=$1
+    for _ in {1..100}; do
+        if hyprctl -j clients | jq -e '
+            .[] | select(.class == "com.moonlight_stream.Moonlight")
+        ' >/dev/null; then
+            hyprctl dispatch "hl.dsp.window.move({ window = \"$moonlight_window\", workspace = \"$target_workspace\", follow = false })"
+            return 0
+        fi
+        sleep 0.05
+    done
+    return 1
+}
+
+show_stream() {
+    # Address the Moonlight client explicitly: `focus(workspace)` changes the
+    # workspace but (by design) does not focus a `no_initial_focus` window.
+    # That left it tiled and let the connection screen remain visible.
+    local target_workspace=$1
+    local window=$moonlight_window
+    hyprctl dispatch "hl.dsp.window.move({ window = \"$window\", workspace = \"$target_workspace\", follow = false })"
+    hyprctl dispatch "hl.dsp.window.fullscreen({ window = \"$window\", mode = \"fullscreen\", action = \"set\", layout_aware = false })"
+    hyprctl dispatch "hl.dsp.focus({ window = \"$window\" })"
+    # Focusing the window is supposed to bring its workspace with it, but this
+    # window carries no_initial_focus and that dispatch has silently no-opped
+    # before. Arriving on the remote workspace is the part that must not be
+    # left to chance.
+    if [[ $(active_workspace) != "$remote_workspace" ]]; then
+        hyprctl dispatch "hl.dsp.focus({ workspace = \"$target_workspace\" })"
+    fi
+}
+
+show_stream_when_mapped() {
+    # The first decoded frame is logged a fraction before Hyprland registers
+    # Moonlight as a client. Wait for that registration; otherwise the
+    # fullscreen/focus dispatchers have no target and silently leave the
+    # connection UI tiled.
+    for _ in {1..40}; do
+        if hyprctl -j clients | jq -e '
+            .[] | select(.class == "com.moonlight_stream.Moonlight")
+        ' >/dev/null; then
+            show_stream "$1"
+            return 0
+        fi
+        sleep 0.05
+    done
+    return 1
+}
+
+# Freezing is just disconnecting the client. Sunshine keeps the Desktop
+# session standing across it (that is what --no-quit-after buys), so a thaw
+# re-enters through Sunshine's /resume endpoint instead of relaunching the app
+# -- which is the whole reason a freeze is cheaper to undo than a cold start.
+cancel_freeze_timer() {
+    local pid
+    [[ -f $timer_file ]] || return 0
+    pid=$(<"$timer_file")
+    rm -f "$timer_file"
+    [[ $pid =~ ^[0-9]+$ ]] || return 0
+    # The timer execs back into this script as `freeze`, which makes the freeze
+    # itself the session leader whose pid is recorded here. Killing the group
+    # unconditionally would then have the freeze kill itself before it ever got
+    # as far as stopping the stream.
+    local our_pgid
+    our_pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]')
+    if [[ $our_pgid == "$pid" ]]; then
+        return 0
+    fi
+    # Otherwise the timer is somebody else and is still sleeping; killing the
+    # group takes the pending `sleep` with it.
+    kill -TERM -- "-$pid" 2>/dev/null || true
+}
+
+start_freeze_timer() {
+    cancel_freeze_timer
+    setsid bash -c "sleep $freeze_delay; exec '$self' '$target' freeze" \
+        >/dev/null 2>&1 &
+    echo $! >"$timer_file"
+}
+
+remember_return_workspace() {
+    local current
+    current=$(active_workspace)
+    if [[ $current != "$remote_workspace" ]]; then
+        printf '%s\n' "$current" >"$return_file"
+    fi
+}
+
+restore_return_workspace() {
+    local target=1
+    if [[ $(active_workspace) != "$remote_workspace" ]]; then
+        return 0
+    fi
+    if [[ -s $return_file ]]; then
+        target=$(<"$return_file")
+    fi
+    hyprctl dispatch "hl.dsp.focus({ workspace = \"name:$target\" })" >/dev/null
+}
+
+# Disconnecting is a step away, not a teardown.
+#
+# Sunshine's session already survives a disconnect -- that is what
+# --no-quit-after buys, and why a reconnect is a /resume. What it does not
+# survive is the Moonlight *client*, and the client is the slow half: booting
+# Qt, SDL and the decoder is most of the wait, the stream itself about a second
+# of it. Killing it on every disconnect meant "back in a moment" cost exactly as
+# much as a cold start.
+#
+# So leaving does what wandering off the workspace already did: hand the screen
+# back and start the freeze countdown, with the session left standing. Returning
+# inside that window is just a workspace switch. Past it the freeze collects the
+# client and the wifi goes quiet, same as before.
+#
+# The timer goes first: restoring the workspace trips the workspace.active hook,
+# which cancels and restarts the countdown itself. Starting ours beforehand
+# means the hook supersedes it rather than racing a second timer against it.
+step_away() {
+    start_freeze_timer
+    restore_return_workspace
+    # Hand the far end its own keyboard back the moment you stop looking at it.
+    peer_restore_layout
+}
+
+case "$mode" in
+    freeze)
+        cancel_freeze_timer
+        if stream_active; then
+            quit_stream
+            peer_restore_layout
+        fi
+        exit 0
+        ;;
+    ws-changed)
+        # Driven by Hyprland's workspace.active hook (see hypr-user.lua); the
+        # hook knows only that the active workspace moved, this decides what
+        # that means.
+        cancel_freeze_timer
+        current_workspace=$(active_workspace)
+        if [[ $current_workspace != "$remote_workspace" ]]; then
+            # Remember where you actually are. Leaving the stream used to put
+            # you back on whatever the last cold start happened to record --
+            # and on workspace 1 when it had recorded nothing at all -- because
+            # only a cold start ever wrote this. Every arrival somewhere that
+            # is not the remote workspace is the answer to "back to where?".
+            printf '%s\n' "$current_workspace" >"$return_file"
+            if stream_active; then
+                start_freeze_timer
+            fi
+            exit 0
+        fi
+        # Arriving on the remote workspace *is* the resume gesture, so fall
+        # through to the open path. It is a no-op if the stream is already up.
+        mode=open
+        ;;
+esac
+
+# `leave` is the soft gesture behind Disconnect and the keybind; `stop` is the
+# hard teardown. Pressing Disconnect while you are already off the remote
+# workspace is the second press of a session you cannot see, and means stop it
+# now rather than start another countdown.
+#
+# Which machine acts is decided by which one holds the client. If the session is
+# ours we tear it down here; if it is the peer looking at *us* there is nothing
+# local to stop, so the request is forwarded to the machine that owns it. That
+# is the same gesture the desktop always had -- it is simply no longer the only
+# thing the desktop can do.
+if [[ $mode == leave || $mode == stop ]]; then
+    if ! stream_active; then
+        [[ -z ${KAGAMI_REMOTE_FORWARDED:-} ]] && on_peer stop
+        exit 0
+    fi
+    if [[ $mode == stop || $(active_workspace) != "$remote_workspace" ]]; then
+        cancel_freeze_timer
+        quit_stream
+        peer_restore_layout
+        restore_return_workspace
+    else
+        step_away
+    fi
+    exit 0
+fi
+
+# A forwarded call must never open a session on the machine it was forwarded
+# to: `open` means "show me the other screen", and the far end asking for that
+# on our behalf would put the stream on the wrong desk.
+if [[ -n ${KAGAMI_REMOTE_FORWARDED:-} ]]; then
+    echo "remote-desktop: refusing to open a session on behalf of $target" >&2
+    exit 2
+fi
+
+# With the session on its own workspace the toggle can mean the obvious thing:
+# leave when you are looking at the remote desktop, go to it when you are not.
+# Pressing it from elsewhere no longer tears down a session you cannot see.
+if [[ $mode == toggle ]]; then
+    if [[ $(active_workspace) == "$remote_workspace" ]]; then
+        step_away
+        exit 0
+    fi
+    mode=open
+fi
+
+# Everything that reaches this point is supposed to be `open`. It used to be
+# that *any* unrecognised mode fell through to it -- a typo, or a subcommand a
+# newer caller knows about and this build does not -- and started a session.
+# On the machine someone is actually sitting at that means their screen jumps
+# to a remote desktop they never asked for, which is a very expensive way to
+# report a spelling mistake.
+if [[ $mode != open ]]; then
+    echo "remote-desktop: unknown mode '$mode'" >&2
+    echo "usage: remote-desktop <peer|desktop|laptop|hostname> [open|toggle|leave|stop|freeze|ws-changed|wake|ssh|status|status-local|capture-size|kb-adopt <layout>|kb-restore]" >&2
+    exit 2
+fi
+
+# Only a genuine cold start records where to come back to: a resume arrives
+# with the remote workspace already active, and the workspace hook can re-enter
+# while the stream is still coming up.
+if ! stream_active; then
+    remember_return_workspace
+fi
+
+# A live client is the authoritative check; the process check closes the short
+# launch race before Moonlight has mapped its Wayland window.
+if hyprctl -j clients | jq -e '
+    .[] | select(.class == "com.moonlight_stream.Moonlight")
+' >/dev/null; then
+    show_stream "$workspace_selector"
+    peer_adopt_layout
+    exit 0
+fi
+
+# `-x` avoids matching the launcher command line itself during a keybind spawn.
+if stream_active; then
+    exit 0
+fi
+
+log_file="${XDG_RUNTIME_DIR:-/tmp}/moonlight-$host.log"
+: >"$log_file"
+# `borderless` rather than `fullscreen`: SDL's real fullscreen is one more
+# reason for it to grab, and Hyprland fullscreens the window itself in
+# show_stream anyway, so this looks identical.
+#
+# `--capture-system-keys never` is what makes the session escapable, and it is
+# not a nicety. Moonlight locks the pointer while its window has focus -- that
+# is Wayland's pointer-constraints protocol, the cursor is frozen dead centre
+# and fed to the remote as relative motion, and no Moonlight flag and no
+# Hyprland window rule turns it off (measured: `hyprctl dispatch movecursor`
+# cannot shift it while Moonlight is focused, and moves it freely the instant
+# anything else is). So the mouse cannot walk out of the session; only a change
+# of focus releases it. With `always` or `fullscreen`, Moonlight was also
+# swallowing the very shortcuts that change focus -- mouse trapped and the way
+# out captured too. `never` keeps your own compositor bindings working, and any
+# of them hands the cursor straight back.
+#
+# `--yuv444` because this is text, not a game. 4:2:0 chroma subsampling stores
+# colour at quarter resolution, which on syntax-highlighted code turns every
+# glyph edge into the soft purple/cyan fringe that reads as a blurry stream --
+# and no amount of bitrate fixes it, because the detail is discarded before the
+# encoder ever sees it. Sunshine negotiates back down to 4:2:0 if an encoder
+# cannot do 4:4:4, so this is safe to ask for unconditionally.
+#
+# `--absolute-mouse` (Moonlight's "remote desktop optimized mouse control") is
+# what makes the pointer usable here. In its default relative mode Moonlight
+# sends motion deltas in *stream* coordinates and Sunshine replays them onto
+# the host desktop unscaled, so streaming a 2880x1800 laptop panel onto a
+# 1920x1080 desktop output multiplied every movement by 1.5x. Absolute mode
+# sends pointer positions instead, so it tracks 1:1 whatever the two
+# resolutions are. This is a desktop session, not a game, so nothing here wants
+# relative capture.
+# `always` by default: inside a session nothing local should answer, so Super
+# and friends go to the remote rather than pulling you out of it by accident.
+# The way out is deliberate and singular -- the SUPER+ALT+T bind carries
+# dont_inhibit, so it survives the client's grab when nothing else does.
+capture_system_keys=$(plugin_setting captureSystemKeys || printf always)
+case $capture_system_keys in
+    never | fullscreen | always) ;;
+    *) capture_system_keys=never ;;
+esac
+
+nohup moonlight stream "$host" "$app" \
+    --resolution "$resolution" --fps "$fps" --bitrate "$bitrate" \
+    --capture-system-keys "$capture_system_keys" --no-quit-after \
+    >"$log_file" 2>&1 &
+
+park_stream "$workspace_selector"
+
+# Moonlight decodes a probe frame at startup to check HEVC support, seconds
+# before it has connected to anything -- so "a frame was decoded" is not on its
+# own a readiness signal, and gating on it is what kept putting the connection
+# UI on screen. The real session begins at "Starting video stream"; only frames
+# logged after that line are the remote desktop.
+stream_ready() {
+    awk '
+        /Starting video stream/            { started = 1; next }
+        started && /Output frame with POC/ { found = 1; exit }
+        END                                { exit(found ? 0 : 1) }
+    ' "$log_file"
+}
+
+# ~30s. A connect over the tailnet takes about six, but a host that has to spin
+# up its encoder can take noticeably longer. The old bound was 100 * 0.05s =
+# five seconds, which a healthy connect did not even fit inside.
+for _ in {1..300}; do
+    if stream_ready; then
+        # Let a few frames land, so the switch shows the desktop rather than
+        # the first keyframe of it.
+        sleep 0.5
+        if stream_active && show_stream_when_mapped "$workspace_selector"; then
+            peer_adopt_layout
+            exit 0
+        fi
+        exit 1
+    fi
+    if ! stream_active; then
+        exit 1
+    fi
+    sleep 0.1
+done
+
+# It never became ready. Leaving the client running would stream to a workspace
+# nobody is on -- exactly the waste the freeze exists to prevent -- and if the
+# switch had already happened, strand you on an empty remote workspace.
+quit_stream
+peer_restore_layout
+restore_return_workspace
+exit 1

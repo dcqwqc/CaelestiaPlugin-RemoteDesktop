@@ -50,7 +50,7 @@ than a guess at it, so the shape is the real one.
 
 Clone into Caelestia's plugin directory:
 
-    git clone https://github.com/dcqwqc/caelestia-plugin-remote-desktop ~/.local/share/caelestia/plugins/remote-desktop
+    git clone https://github.com/dcqwqc/CaelestiaPlugin-RemoteDesktop ~/.local/share/caelestia/plugins/remote-desktop
 
 Or clone anywhere and add the parent to `path` in
 `~/.config/caelestia/plugins.json`.

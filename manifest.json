@@ -2,7 +2,7 @@
   "name": "RemoteDesktop",
   "version": "0.1.0",
   "author": "dcqwqc",
-  "homepage": "https://github.com/dcqwqc/caelestia-plugin-remote-desktop",
+  "homepage": "https://github.com/dcqwqc/CaelestiaPlugin-RemoteDesktop",
   "icon": "cast",
   "description": "A two-way Moonlight/Sunshine desktop link between configured hosts, with wake, SSH and session state in the bar.",
   "entryPoints": [

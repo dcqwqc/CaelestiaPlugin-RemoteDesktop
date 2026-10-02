@@ -183,10 +183,10 @@ ColumnLayout {
 
             ActionButton {
                 visible: hostRow.device.canSsh
-                disabled: !hostRow.online || !hostRow.device.sshAvailable
+                disabled: !hostRow.online || (hostRow.device.type !== "phone" && !hostRow.device.sshAvailable)
                 icon: "terminal"
                 hint: qsTr("Open terminal")
-                onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.actionHost, "ssh"])
+                onClicked: hostRow.device.type === "phone" ? Quickshell.execDetached(["kitty", "-e", "ssh", "nothing-phone"]) : Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.actionHost, "ssh"])
             }
         }
     }

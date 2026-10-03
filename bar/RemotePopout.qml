@@ -330,6 +330,51 @@ ColumnLayout {
         Layout.leftMargin: Tokens.padding.extraSmall
         Layout.rightMargin: Tokens.padding.extraSmall
         Layout.topMargin: 0
+        spacing: Tokens.spacing.extraSmall
+
+        MaterialIcon {
+            text: "cloud_sync"
+            fontStyle: Tokens.font.icon.small
+            color: Colours.palette.m3onSurfaceVariant
+        }
+
+        StyledText {
+            Layout.fillWidth: true
+            text: qsTr("MCP tunnel")
+            color: Colours.palette.m3onSurface
+            font: Tokens.font.body.small
+        }
+
+        Rectangle {
+            width: 7
+            height: 7
+            radius: 3.5
+            color: RemoteDesktop.RemoteStatus.tunnelState === "online" ? "#43a047"
+                : RemoteDesktop.RemoteStatus.tunnelState === "degraded" ? "#d99a00"
+                : RemoteDesktop.RemoteStatus.tunnelState === "offline" ? Colours.palette.m3error
+                : Colours.palette.m3outline
+        }
+
+        StyledText {
+            text: {
+                const state = RemoteDesktop.RemoteStatus.tunnelState;
+                const label = state === "online" ? qsTr("Online")
+                    : state === "degraded" ? qsTr("Degraded")
+                    : state === "offline" ? qsTr("Offline")
+                    : qsTr("Checking");
+                const host = RemoteDesktop.RemoteStatus.tunnelHost;
+                return host.length > 0 ? `${label} · ${host}` : label;
+            }
+            color: Colours.palette.m3onSurfaceVariant
+            font: Tokens.font.label.small
+        }
+    }
+
+    RowLayout {
+        Layout.fillWidth: true
+        Layout.leftMargin: Tokens.padding.extraSmall
+        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.topMargin: 0
         Layout.bottomMargin: Tokens.padding.extraSmall
         spacing: Tokens.spacing.extraSmall
 

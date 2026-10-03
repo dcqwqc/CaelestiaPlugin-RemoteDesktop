@@ -13,6 +13,7 @@ Singleton {
     // here. The Hyprland keybind spells the path out for the same reason.
     readonly property string bin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/remote-desktop`
     readonly property string exitNodeBin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/tailscale-exit-node`
+    readonly property string tunnelStatusBin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/openai-tunnel-status`
 
     // Tailscale exit-node state. Selecting one routes all ordinary internet
     // traffic through that peer while keeping local-LAN access available.
@@ -31,11 +32,20 @@ Singleton {
     // meant editing the shell. hosts.conf is already the one place that knows;
     // now it is the only place.
     property var configuredHosts: ({})
+    property var deviceTypes: ({})
+    readonly property string deviceTypesFile: `${Quickshell.env("HOME")}/.config/caelestia/remote-desktop/device-types.conf`
 
     property var devices: []
     property var hostOnline: ({})
     property var sshProbeTargets: []
     property var sshAvailability: ({})
+
+    // OpenAI MCP tunnel health is discovered from server-class devices rather
+    // than hardcoding a machine name. The helper finds the server that actually
+    // hosts philipedia-terminal and returns its watchdog status.
+    property var tunnelProbeTargets: []
+    property string tunnelState: "unknown"
+    property string tunnelHost: ""
 
     // A session has a direction, and the two halves are found in different
     // places. `viewing` is answerable here -- it is our own Moonlight client.
@@ -106,6 +116,7 @@ Singleton {
 
     Component.onCompleted: {
         hostsProc.running = true;
+        deviceTypesProc.running = true;
         root.refresh();
     }
 
@@ -129,6 +140,29 @@ Singleton {
                     // no wake actions offered, which is the right answer on a
                     // machine with no hosts.conf.
                 }
+            }
+        }
+    }
+
+    // Device form factor is separate from connectivity. Keeping it in a
+    // tiny config file means the UI never hardcodes specific host names.
+    Process {
+        id: deviceTypesProc
+
+        command: ["cat", root.deviceTypesFile]
+        running: false
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const types = {};
+                for (const rawLine of text.split("\n")) {
+                    const line = rawLine.trim();
+                    if (!line.length || line.startsWith("#"))
+                        continue;
+                    const parts = line.split(/\s+/);
+                    if (parts.length >= 2)
+                        types[parts[0].toLowerCase()] = parts[1].toLowerCase();
+                }
+                root.deviceTypes = types;
             }
         }
     }
@@ -161,7 +195,14 @@ Singleton {
                         // label even when the HostName does not), so identity comes from there and
                         // falls back to HostName only if DNSName is absent.
                         const hostId = (actionHost.split(".")[0] || node.HostName).toLowerCase();
-                        const online = isSelf || !!node.Online;
+                        // Tailscale's Self.Online is a control-plane status bit and can
+                        // briefly be false even while this machine's tailnet address is
+                        // fully usable. For the local host, treat a running Tailscale
+                        // backend with an assigned tailnet IP as available, then let the
+                        // TCP/22 probe below decide whether SSH is actually reachable.
+                        const online = isSelf
+                            ? data.BackendState === "Running" && (node.TailscaleIPs ?? []).length > 0
+                            : !!node.Online;
                         byHost[hostId] = online;
 
                         if (!isSelf && node.ExitNodeOption) {
@@ -185,6 +226,10 @@ Singleton {
                             actionHost: actionHost,
                             online: online,
                             os: node.OS || "",
+                            type: root.deviceTypes[hostId]
+                                || ((node.OS || "").toLowerCase() === "android" ? "phone"
+                                    : (node.OS || "").toLowerCase() === "ios" ? "tablet"
+                                    : "desktop"),
                             isSelf: isSelf,
                             // Configured in hosts.conf, never inferred from
                             // tailnet membership. Both hosts serve and both
@@ -205,6 +250,7 @@ Singleton {
                             // Preserve the previous port-22 result while a new
                             // Tailscale snapshot is being probed. Without this the
                             // icon visibly alternates gray/dark every refresh.
+                            sshKnown: !online || root.sshAvailability[actionHost] !== undefined,
                             sshAvailable: online && !!root.sshAvailability[actionHost]
                         });
                     };
@@ -225,10 +271,16 @@ Singleton {
                     root.devices = devices;
                     root.hostOnline = byHost;
                     root.sshProbeTargets = devices
-                        .filter(device => !device.isSelf && device.online)
+                        .filter(device => device.online)
                         .map(device => device.actionHost);
                     if (!sshProbeProc.running && root.sshProbeTargets.length > 0)
                         sshProbeProc.running = true;
+
+                    root.tunnelProbeTargets = devices
+                        .filter(device => device.type === "server" && !device.isSelf)
+                        .map(device => device.actionHost);
+                    if (!tunnelStatusProc.running)
+                        tunnelStatusProc.running = true;
                 } catch (e) {
                     // Leave previous state on a parse failure (e.g. tailscale down).
                 }
@@ -266,6 +318,7 @@ Singleton {
                     root.sshAvailability = Object.assign({}, root.sshAvailability, available);
                     root.devices = root.devices.map(device => {
                         const updated = Object.assign({}, device);
+                        updated.sshKnown = true;
                         updated.sshAvailable = device.online && !!available[device.actionHost];
                         return updated;
                     });
@@ -273,6 +326,35 @@ Singleton {
                     // Keep the prior disabled state when the probe cannot run.
                 }
             }
+        }
+    }
+
+    // The tunnel can be alive as a process while its OpenAI control-plane
+    // poller is stuck. Ask the server-side watchdog for semantic health instead
+    // of treating TCP reachability as tunnel health.
+    Process {
+        id: tunnelStatusProc
+
+        command: [root.tunnelStatusBin].concat(root.tunnelProbeTargets)
+        running: false
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const status = JSON.parse(text);
+                    const state = String(status.state ?? "unknown");
+                    root.tunnelState = ["online", "degraded", "offline"].includes(state)
+                        ? state
+                        : "unknown";
+                    if (String(status.host ?? "").length > 0)
+                        root.tunnelHost = String(status.host);
+                } catch (e) {
+                    root.tunnelState = "unknown";
+                }
+            }
+        }
+        onExited: code => {
+            if (code !== 0)
+                root.tunnelState = "unknown";
         }
     }
 
@@ -335,6 +417,17 @@ Singleton {
             onStreamFinished: {
                 root.linkState = text.trim();
             }
+        }
+    }
+
+    Timer {
+        interval: 10000
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: {
+            if (!tunnelStatusProc.running)
+                tunnelStatusProc.running = true;
         }
     }
 

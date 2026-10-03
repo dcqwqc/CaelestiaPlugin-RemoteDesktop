@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -u
+
+if (( $# == 0 )); then
+  printf '{"state":"unknown","host":""}\n'
+  exit 0
+fi
+
+had_candidate=0
+for host in "$@"; do
+  [[ -n "$host" ]] || continue
+  had_candidate=1
+  state="$(ssh -o BatchMode=yes -o ConnectTimeout=2 -o ConnectionAttempts=1 "$host" \
+    'test -x "$HOME/philipedia-terminal/scripts/tunnel-watchdog.sh" && "$HOME/philipedia-terminal/scripts/tunnel-watchdog.sh" --status' \
+    2>/dev/null || true)"
+  case "$state" in
+    online|degraded|offline)
+      short="${host%%.*}"
+      printf '{"state":"%s","host":"%s"}\n' "$state" "$short"
+      exit 0
+      ;;
+  esac
+done
+
+if (( had_candidate )); then
+  printf '{"state":"offline","host":""}\n'
+else
+  printf '{"state":"unknown","host":""}\n'
+fi

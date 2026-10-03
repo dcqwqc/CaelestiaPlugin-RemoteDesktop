@@ -16,7 +16,7 @@ them.
 ## Requires
 
 `moonlight-qt` and `sunshine` on both ends, `tailscale`, `jq`, and the
-`kagami-remote` helper from [kagami](https://github.com/dcqwqc/kagami).
+`kagami-remote` helper from [kagami](https://github.com/dcqwqc/CaelestiaPlugin-Kagami).
 
 ## Settings
 
@@ -58,3 +58,9 @@ Or clone anywhere and add the parent to `path` in
 ## Licence
 
 GPL-3.0-or-later, matching Caelestia.
+
+## MCP tunnel health
+
+The bar status light now includes the OpenAI MCP tunnel used by Philipedia Terminal. Green means the local remote path and tunnel are healthy, amber means a dependency is degraded, red means a dependency is offline, and gray means a probe is still unknown. The popout also shows the tunnel state and the server that answered the health probe.
+
+Server discovery uses `device-types.conf`; it probes server-class peers and uses the first one that exposes the Philipedia tunnel watchdog, so the UI does not need a hard-coded Tailscale hostname.

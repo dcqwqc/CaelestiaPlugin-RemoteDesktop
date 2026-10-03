@@ -20,17 +20,28 @@ Item {
         fontStyle: Tokens.font.icon.small
     }
 
-    // Small at-a-glance dot: green while actively streaming, muted red when the
-    // peer is unreachable over Tailscale, otherwise invisible (idle).
-    //
-    // It used to watch one machine by name, which reported that host's health
-    // to itself -- always online, so the offline half of the indicator could
-    // only ever fire on the laptop. It follows whichever host is the far end.
+    // One compact status light for the remote path.
     Rectangle {
-        readonly property bool online: !RemoteDesktop.RemoteStatus.peerId || !!RemoteDesktop.RemoteStatus.hostOnline[RemoteDesktop.RemoteStatus.peerId]
-        readonly property bool streaming: RemoteDesktop.RemoteStatus.streaming
+        readonly property var host: RemoteDesktop.RemoteStatus.devices.find(device => device.isSelf)
+        readonly property string localHealth: !host
+            ? "unknown"
+            : !host.online
+                ? "offline"
+                : !host.sshKnown
+                    ? "unknown"
+                    : host.sshAvailable
+                        ? "reachable"
+                        : "degraded"
+        readonly property string tunnelHealth: RemoteDesktop.RemoteStatus.tunnelState
+        readonly property string health: localHealth === "offline" || tunnelHealth === "offline"
+            ? "offline"
+            : localHealth === "degraded" || tunnelHealth === "degraded"
+                ? "degraded"
+                : localHealth === "unknown" || tunnelHealth === "unknown"
+                    ? "unknown"
+                    : "reachable"
 
-        visible: streaming || !online
+        visible: true
         width: 6
         height: 6
         radius: 3
@@ -38,7 +49,13 @@ Item {
         anchors.bottom: icon.bottom
         anchors.rightMargin: -1
         anchors.bottomMargin: -1
-        color: streaming ? Colours.palette.m3primary : Colours.palette.m3error
+        color: health === "reachable"
+            ? "#43a047"
+            : health === "degraded"
+                ? "#d99a00"
+                : health === "offline"
+                    ? Colours.palette.m3error
+                    : Colours.palette.m3outline
         border.width: 1
         border.color: Colours.palette.m3surface
     }

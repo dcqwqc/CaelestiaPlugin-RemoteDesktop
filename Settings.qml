@@ -10,6 +10,11 @@ import Caelestia.Plugins
 // Which machines exist stays in ~/.config/kagami/hosts.conf: that is identity,
 // it needs MAC addresses, and it differs per desk.
 SettingsObject {
+    // Per-device presentation overrides, keyed by stable Tailscale/MagicDNS id.
+    // Example: {"workstation":{"enabled":true,"name":"Main PC","icon":"desktop_windows"}}
+    // Kept as JSON so newly discovered devices do not require new QML properties.
+    property string deviceOverridesJson: "{}"
+
     property int bitrate: 0
     SettingMeta on bitrate {
         label: "Bitrate"

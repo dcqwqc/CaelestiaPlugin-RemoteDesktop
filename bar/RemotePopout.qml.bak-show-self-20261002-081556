@@ -1,0 +1,298 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Layouts
+import Quickshell
+import Caelestia.Config
+import qs.components
+import qs.components.controls
+import qs.services
+import dcqwqc.remotedesktop.services as RemoteDesktop
+import qs.utils
+
+ColumnLayout {
+    id: root
+
+    required property PopoutState popouts
+
+    width: 304
+    spacing: Tokens.spacing.extraSmall
+
+    property var exitMenuItems: []
+
+    function syncExitMenu(): void {
+        routeMenu.active = null;
+    }
+
+    function rebuildExitMenu(): void {
+        for (const item of exitMenuItems) {
+            if (item !== directExitItem)
+                item.destroy();
+        }
+
+        const items = [directExitItem];
+        for (const node of RemoteDesktop.RemoteStatus.exitNodes) {
+            const item = exitNodeMenuItem.createObject(root, {
+                text: node.name,
+                icon: "router",
+                nodeId: node.id
+            });
+            if (item)
+                items.push(item);
+        }
+        exitMenuItems = items;
+        routeMenu.items = items;
+        syncExitMenu();
+    }
+
+    Component.onCompleted: rebuildExitMenu()
+
+    Connections {
+        target: RemoteDesktop.RemoteStatus
+        function onExitNodesChanged(): void { root.rebuildExitMenu(); }
+        function onExitNodeIdChanged(): void { root.syncExitMenu(); }
+    }
+
+    MenuItem {
+        id: directExitItem
+        property string nodeId: ""
+        text: qsTr("Direct")
+        icon: "public"
+    }
+
+    Component {
+        id: exitNodeMenuItem
+
+        MenuItem {
+            required property string nodeId
+        }
+    }
+
+    component ActionButton: IconButton {
+        id: btn
+
+        required property string hint
+        property bool accent: false
+
+        type: IconButton.Text
+        font: Tokens.font.icon.small
+        shapeMorph: false
+
+        Tooltip {
+            target: btn
+            text: btn.hint
+        }
+    }
+
+    component HostRow: RowLayout {
+        id: hostRow
+
+        required property var device
+
+        readonly property bool online: !!device.online
+        readonly property bool isPeer: device.id === RemoteDesktop.RemoteStatus.peerId
+        readonly property bool viewing: isPeer && RemoteDesktop.RemoteStatus.viewing
+        readonly property bool shared: isPeer && RemoteDesktop.RemoteStatus.shared
+        readonly property bool hasSession: viewing || shared
+
+        Layout.fillWidth: true
+        Layout.leftMargin: Tokens.padding.extraSmall
+        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.topMargin: Tokens.padding.extraSmall
+        Layout.bottomMargin: Tokens.padding.extraSmall
+        spacing: Tokens.spacing.extraSmall
+
+        Item {
+            id: deviceIconWrap
+
+            implicitWidth: deviceIcon.implicitWidth
+            implicitHeight: deviceIcon.implicitHeight
+            Layout.alignment: Qt.AlignVCenter
+
+            MaterialIcon {
+                id: deviceIcon
+
+                anchors.centerIn: parent
+                text: hostRow.device.type === "phone"
+                    ? "smartphone"
+                    : hostRow.device.type === "server"
+                        ? "dns"
+                        : hostRow.device.type === "laptop"
+                            ? "laptop"
+                            : hostRow.device.type === "tablet"
+                                ? "tablet_mac"
+                                : "computer"
+                fontStyle: Tokens.font.icon.small
+                color: hostRow.online
+                    ? Colours.palette.m3onSurface
+                    : Colours.palette.m3onSurfaceVariant
+            }
+
+            Rectangle {
+                width: 7
+                height: 7
+                radius: 3.5
+                anchors.right: deviceIcon.right
+                anchors.bottom: deviceIcon.bottom
+                anchors.rightMargin: -2
+                anchors.bottomMargin: -2
+                color: hostRow.online
+                    ? Colours.palette.m3primary
+                    : Colours.palette.m3error
+                border.width: 1
+                border.color: Colours.palette.m3surface
+            }
+        }
+
+        StyledText {
+            Layout.fillWidth: true
+            Layout.minimumWidth: 72
+            Layout.alignment: Qt.AlignVCenter
+            text: hostRow.device.name
+            elide: Text.ElideRight
+            font: Tokens.font.body.builders.small.weight(Font.Medium).build()
+        }
+
+        RowLayout {
+            Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+            spacing: 0
+
+            ActionButton {
+                visible: hostRow.device.canRemoteDesktop
+                disabled: !hostRow.online || hostRow.shared
+                accent: hostRow.viewing
+                icon: hostRow.viewing ? "desktop_windows" : "link"
+                hint: hostRow.viewing ? qsTr("Open remote desktop") : qsTr("Connect")
+                onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "open"])
+            }
+
+            ActionButton {
+                visible: hostRow.hasSession
+                icon: "link_off"
+                hint: qsTr("Disconnect")
+                onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "leave"])
+            }
+
+            ActionButton {
+                visible: hostRow.device.canWake
+                icon: "bolt"
+                hint: qsTr("Wake")
+                onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "wake"])
+            }
+
+            ActionButton {
+                visible: hostRow.device.canSsh
+                disabled: !hostRow.online || !hostRow.device.sshAvailable
+                icon: "terminal"
+                hint: qsTr("Open terminal")
+                onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.actionHost, "ssh"])
+            }
+        }
+    }
+
+    StyledText {
+        Layout.topMargin: Tokens.padding.extraSmall
+        Layout.bottomMargin: 0
+        Layout.leftMargin: Tokens.padding.extraSmall
+        text: qsTr("Remote desktop")
+        font: Tokens.font.body.builders.medium.weight(Font.Medium).build()
+    }
+
+    Repeater {
+        model: RemoteDesktop.RemoteStatus.devices.filter(device =>
+            !device.isSelf
+            && (
+                ["osiris", "nothing", "mirai"].includes(device.id)
+                || device.canRemoteDesktop
+                || device.canWake
+                || (device.canSsh && device.sshAvailable)
+            )
+        )
+
+        delegate: HostRow {
+            required property var modelData
+            device: modelData
+        }
+    }
+
+    RowLayout {
+        Layout.fillWidth: true
+        Layout.leftMargin: Tokens.padding.extraSmall
+        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.topMargin: 0
+        Layout.bottomMargin: Tokens.padding.extraSmall
+        spacing: Tokens.spacing.extraSmall
+
+        MaterialIcon {
+            text: "route"
+            fontStyle: Tokens.font.icon.small
+            color: Colours.palette.m3onSurfaceVariant
+        }
+
+        StyledText {
+            Layout.fillWidth: true
+            text: qsTr("Route")
+            color: Colours.palette.m3onSurface
+            font: Tokens.font.body.small
+        }
+
+        Item {
+            id: routePicker
+
+            implicitWidth: routePickerRow.implicitWidth
+            implicitHeight: routePickerRow.implicitHeight
+
+            RowLayout {
+                id: routePickerRow
+
+                anchors.fill: parent
+                spacing: 2
+
+                StyledText {
+                    text: RemoteDesktop.RemoteStatus.exitNodeActive
+                        ? RemoteDesktop.RemoteStatus.exitNodeName
+                        : qsTr("Direct")
+                    color: Colours.palette.m3onSurfaceVariant
+                    font: Tokens.font.body.small
+                }
+
+                MaterialIcon {
+                    text: "expand_more"
+                    color: Colours.palette.m3onSurfaceVariant
+                    fontStyle: Tokens.font.icon.small
+                }
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                enabled: !RemoteDesktop.RemoteStatus.exitNodeChanging
+                cursorShape: Qt.PointingHandCursor
+                onClicked: routeMenu.expanded = !routeMenu.expanded
+            }
+
+            Menu {
+                id: routeMenu
+
+                attachTo: routePicker
+                items: root.exitMenuItems
+                active: null
+                onItemSelected: item => {
+                    RemoteDesktop.RemoteStatus.setExitNode(item.nodeId);
+                    Qt.callLater(() => routeMenu.active = null);
+                }
+            }
+        }
+    }
+
+    StyledText {
+        Layout.fillWidth: true
+        Layout.leftMargin: Tokens.padding.extraSmall + Tokens.padding.large
+        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.bottomMargin: Tokens.padding.extraSmall
+        visible: RemoteDesktop.RemoteStatus.exitNodeError.length > 0
+        text: RemoteDesktop.RemoteStatus.exitNodeError
+        color: Colours.palette.m3error
+        wrapMode: Text.Wrap
+        font: Tokens.font.label.small
+    }
+}

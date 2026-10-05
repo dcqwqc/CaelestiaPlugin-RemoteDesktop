@@ -1,0 +1,73 @@
+import QtQuick
+import Caelestia.Config
+import qs.components
+import qs.services
+import dcqwqc.remotedesktop.services as RemoteDesktop
+
+Item {
+    id: root
+
+    implicitWidth: icon.implicitHeight + Tokens.padding.small
+    implicitHeight: icon.implicitHeight
+
+    MaterialIcon {
+        id: icon
+
+        anchors.centerIn: parent
+
+        text: "cast_connected"
+        color: Colours.palette.m3secondary
+        fontStyle: Tokens.font.icon.small
+    }
+
+    // Reachability indicator for this host (the machine running the shell).
+    // Green  = Tailscale online + SSH reachable.
+    // Amber  = Tailscale online, but SSH is not reachable.
+    // Red    = this host is offline on Tailscale.
+    // Gray   = still waiting for the SSH probe.
+    // Streaming state is deliberately separate from host health.
+    Rectangle {
+        readonly property var host: RemoteDesktop.RemoteStatus.devices.find(device => device.isSelf)
+        readonly property string health: !host
+            ? "unknown"
+            : !host.online
+                ? "offline"
+                : !host.sshKnown
+                    ? "unknown"
+                    : host.sshAvailable
+                        ? "reachable"
+                        : "degraded"
+
+        visible: true
+        width: 6
+        height: 6
+        radius: 3
+        anchors.right: icon.right
+        anchors.bottom: icon.bottom
+        anchors.rightMargin: -1
+        anchors.bottomMargin: -1
+        color: health === "reachable"
+            ? "#43a047"
+            : health === "degraded"
+                ? "#d99a00"
+                : health === "offline"
+                    ? Colours.palette.m3error
+                    : Colours.palette.m3outline
+        border.width: 1
+        border.color: Colours.palette.m3surface
+
+        function dumpHealth(): void {
+            console.info("RD_HEALTH", JSON.stringify({
+                host: host ? host.id : null,
+                online: host ? host.online : null,
+                sshKnown: host ? host.sshKnown : null,
+                sshAvailable: host ? host.sshAvailable : null,
+                health: health
+            }));
+        }
+
+        Component.onCompleted: dumpHealth()
+        onHostChanged: dumpHealth()
+        onHealthChanged: dumpHealth()
+    }
+}

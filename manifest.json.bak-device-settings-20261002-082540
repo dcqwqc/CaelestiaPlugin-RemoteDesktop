@@ -1,0 +1,21 @@
+{
+  "name": "RemoteDesktop",
+  "version": "0.1.0",
+  "author": "dcqwqc",
+  "homepage": "https://github.com/dcqwqc/CaelestiaPlugin-RemoteDesktop",
+  "icon": "cast",
+  "description": "A two-way Moonlight/Sunshine desktop link between configured hosts, with wake, SSH and session state in the bar.",
+  "entryPoints": [
+    {
+      "type": "bar-entry",
+      "source": "bar/RemoteEntry.qml",
+      "properties": { "name": "remote" }
+    },
+    {
+      "type": "bar-popout",
+      "source": "bar/RemotePopout.qml",
+      "properties": { "entry": "remote" }
+    }
+  ],
+  "settings": "Settings.qml"
+}

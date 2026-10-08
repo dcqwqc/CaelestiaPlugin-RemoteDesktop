@@ -7,6 +7,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 POP = (ROOT / 'bar/RemotePopout.qml').read_text()
 STATUS = (ROOT / 'services/RemoteStatus.qml').read_text()
+BAR = (ROOT / 'bar/RemoteEntry.qml').read_text()
 
 
 class DevicePanelPolicyTests(unittest.TestCase):
@@ -35,6 +36,35 @@ class DevicePanelPolicyTests(unittest.TestCase):
 
     def test_aggregate_reasons_have_valid_newline_separator(self):
         self.assertIn('return errors.join(String.fromCharCode(10));', STATUS)
+
+    def test_action_buttons_always_in_compact_row(self):
+        row = POP.split('component HostRow: ColumnLayout {', 1)[1]
+        main, details = row.split('// Remote peers can show their diagnosis', 1)
+        # They must occur before the expandable diagnostics instead of inside
+        # an expanded-only RowLayout, as they did in the previous revision.
+        controls = main.split('// Connect / Wake / Terminal stay on the main row', 1)[1]
+        controls = controls.split("// Remote peers can show their diagnosis", 1)[0]
+        for action in ('Mirror phone', 'Open remote desktop', 'Disconnect', 'Wake', 'Open terminal'):
+            with self.subTest(action=action):
+                self.assertIn(action, controls)
+        self.assertNotIn('visible: !hostRow.isSelf && hostRow.expanded', controls)
+
+    def test_chevron_is_small_and_immediately_after_name(self):
+        self.assertIn('anchors.left: deviceNameText.right', POP)
+        self.assertIn('fontStyle: Tokens.font.icon.size(deviceNameText.font.pointSize).build()', POP)
+        self.assertIn('onClicked: root.toggleDeviceExpanded(hostRow.device.id)', POP)
+        self.assertIn('visible: !hostRow.isSelf', POP)
+
+    def test_status_has_coloured_dot_but_no_status_word_labels(self):
+        self.assertNotIn('readonly property string statusLabel:', POP)
+        self.assertNotIn('qsTr("Healthy")', POP)
+        self.assertNotIn('qsTr("Degraded")', POP)
+        self.assertNotIn('qsTr("Offline")', POP)
+        self.assertNotIn('qsTr("Checking")', POP)
+        self.assertNotIn('Devices status: %1', BAR)
+        self.assertIn('"#43a047"', POP)
+        self.assertIn('"#d99a00"', POP)
+        self.assertIn('Colours.palette.m3error', POP)
 
     def test_qml_syntax(self):
         exe = shutil.which('qmlformat') or '/usr/lib/qt6/bin/qmlformat'

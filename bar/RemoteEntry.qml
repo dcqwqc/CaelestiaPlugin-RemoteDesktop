@@ -19,8 +19,8 @@ Item {
     Tooltip {
         target: root
         delay: 250
-        text: root.health === "reachable" ? qsTr("Devices: all monitored dependencies healthy")
-            : qsTr("Devices status: %1%2%3").arg(root.health).arg(String.fromCharCode(10)).arg(root.healthError)
+        text: root.health === "reachable" ? qsTr("Devices")
+            : qsTr("Devices%1%2").arg(String.fromCharCode(10)).arg(root.healthError)
     }
 
     MaterialIcon {
@@ -43,13 +43,9 @@ Item {
         anchors.bottom: icon.bottom
         anchors.rightMargin: -1
         anchors.bottomMargin: -1
-        color: root.health === "reachable"
-            ? "#43a047"
-            : root.health === "degraded"
-                ? "#d99a00"
-                : root.health === "offline"
-                    ? Colours.palette.m3error
-                    : Colours.palette.m3outline
+        color: root.health === "reachable" ? "#43a047"
+            : root.health === "offline" ? Colours.palette.m3error
+            : "#d99a00"
         border.width: 1
         border.color: Colours.palette.m3surface
     }

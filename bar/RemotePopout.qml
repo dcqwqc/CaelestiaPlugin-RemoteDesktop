@@ -249,10 +249,7 @@ Item {
         readonly property bool viewing: isPeer && RemoteDesktop.RemoteStatus.viewing
         readonly property bool shared: isPeer && RemoteDesktop.RemoteStatus.shared
         readonly property bool hasSession: viewing || shared
-        readonly property string statusLabel: health === "reachable" ? qsTr("Healthy")
-            : health === "degraded" ? qsTr("Degraded")
-            : health === "offline" ? qsTr("Offline")
-            : qsTr("Checking")
+        // No status words: the dot is the only at-a-glance health indicator.
 
         Layout.fillWidth: true
         Layout.leftMargin: Tokens.padding.small
@@ -290,44 +287,97 @@ Item {
                     anchors.rightMargin: -2
                     anchors.bottomMargin: -2
                     color: hostRow.health === "reachable" ? "#43a047"
-                        : hostRow.health === "degraded" ? "#d99a00"
                         : hostRow.health === "offline" ? Colours.palette.m3error
-                        : Colours.palette.m3outline
+                        : "#d99a00" // Pending/unknown is amber, never silently green.
                     border.width: 1
                     border.color: Colours.palette.m3surface
                 }
             }
 
-            ColumnLayout {
+            // The name and small chevron are one left-aligned cluster.
+            // The arrow stays immediately next to the visible text even when
+            // wide names are elided to leave room for the action controls.
+            Item {
+                id: nameAndChevron
                 Layout.fillWidth: true
                 Layout.minimumWidth: 0
-                spacing: 0
+                Layout.alignment: Qt.AlignVCenter
+                implicitHeight: deviceNameText.implicitHeight + 2
 
                 StyledText {
-                    Layout.fillWidth: true
+                    id: deviceNameText
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.min(implicitWidth, Math.max(0, parent.width - (hostRow.isSelf ? 0 : 19)))
                     text: root.deviceName(hostRow.device)
                     elide: Text.ElideRight
                     font: Tokens.font.body.builders.small.weight(Font.Medium).build()
                 }
-                StyledText {
-                    Layout.fillWidth: true
-                    text: hostRow.isSelf
-                        ? qsTr("This device · %1").arg(hostRow.statusLabel)
-                        : hostRow.statusLabel
-                    elide: Text.ElideRight
-                    color: hostRow.health === "reachable"
-                        ? Colours.palette.m3onSurfaceVariant : Colours.palette.m3error
-                    font: Tokens.font.label.small
+
+                Item {
+                    id: detailsChevron
+                    visible: !hostRow.isSelf
+                    width: 19
+                    height: 24
+                    anchors.left: deviceNameText.right
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    MaterialIcon {
+                        anchors.centerIn: parent
+                        text: hostRow.expanded ? "expand_less" : "expand_more"
+                        fontStyle: Tokens.font.icon.size(deviceNameText.font.pointSize).build()
+                        color: Colours.palette.m3onSurfaceVariant
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleDeviceExpanded(hostRow.device.id)
+                    }
                 }
             }
 
-            // Never show an expander on the current device: its diagnostics
-            // must remain immediately readable whenever its dot is not green.
-            ActionButton {
-                visible: !hostRow.isSelf
-                icon: hostRow.expanded ? "expand_less" : "expand_more"
-                hint: hostRow.expanded ? qsTr("Hide device details") : qsTr("Show device details")
-                onClicked: root.toggleDeviceExpanded(hostRow.device.id)
+            // Connect / Wake / Terminal stay on the main row and are never
+            // gated by the diagnostics chevron, just like the original UI.
+            RowLayout {
+                Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+                spacing: 0
+
+                ActionButton {
+                    visible: root.phoneMirrorMatches(hostRow.device)
+                    disabled: !hostRow.online
+                    icon: "link"
+                    hint: qsTr("Mirror phone")
+                    onClicked: Quickshell.execDetached([root.phoneMirrorBin])
+                }
+                ActionButton {
+                    visible: hostRow.device.canRemoteDesktop
+                    disabled: !hostRow.online || hostRow.shared
+                    accent: hostRow.viewing
+                    icon: hostRow.viewing ? "desktop_windows" : "link"
+                    hint: hostRow.viewing ? qsTr("Open remote desktop") : qsTr("Connect")
+                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "open"])
+                }
+                ActionButton {
+                    visible: hostRow.hasSession
+                    icon: "link_off"
+                    hint: qsTr("Disconnect")
+                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "leave"])
+                }
+                ActionButton {
+                    visible: hostRow.device.canWake
+                    icon: "bolt"
+                    hint: qsTr("Wake")
+                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "wake"])
+                }
+                ActionButton {
+                    visible: hostRow.device.canSsh
+                    disabled: !hostRow.online || (hostRow.device.type !== "phone" && !hostRow.device.sshAvailable)
+                    icon: "terminal"
+                    hint: qsTr("Open terminal")
+                    onClicked: hostRow.device.type === "phone"
+                        ? Quickshell.execDetached(["ghostty", "-e", "ssh", "nothing-phone"])
+                        : Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.actionHost, "ssh"])
+                }
             }
         }
 
@@ -343,52 +393,16 @@ Item {
             font: Tokens.font.label.small
         }
 
-        // Remote actions and detailed errors share the same expanded panel.
-        // A collapsed peer is a single aligned row with its status dot.
-        RowLayout {
+        // Remote peers can show their diagnosis on demand without moving any actions.
+        StyledText {
             Layout.fillWidth: true
             Layout.leftMargin: Tokens.padding.large
             Layout.rightMargin: Tokens.padding.extraSmall
-            Layout.alignment: Qt.AlignRight
-            spacing: Tokens.spacing.extraSmall
-            visible: !hostRow.isSelf && hostRow.expanded
-
-            ActionButton {
-                visible: root.phoneMirrorMatches(hostRow.device)
-                disabled: !hostRow.online
-                icon: "link"
-                hint: qsTr("Mirror phone")
-                onClicked: Quickshell.execDetached([root.phoneMirrorBin])
-            }
-            ActionButton {
-                visible: hostRow.device.canRemoteDesktop
-                disabled: !hostRow.online || hostRow.shared
-                accent: hostRow.viewing
-                icon: hostRow.viewing ? "desktop_windows" : "link"
-                hint: hostRow.viewing ? qsTr("Open remote desktop") : qsTr("Connect")
-                onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "open"])
-            }
-            ActionButton {
-                visible: hostRow.hasSession
-                icon: "link_off"
-                hint: qsTr("Disconnect")
-                onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "leave"])
-            }
-            ActionButton {
-                visible: hostRow.device.canWake
-                icon: "bolt"
-                hint: qsTr("Wake")
-                onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "wake"])
-            }
-            ActionButton {
-                visible: hostRow.device.canSsh
-                disabled: !hostRow.online || (hostRow.device.type !== "phone" && !hostRow.device.sshAvailable)
-                icon: "terminal"
-                hint: qsTr("Open terminal")
-                onClicked: hostRow.device.type === "phone"
-                    ? Quickshell.execDetached(["ghostty", "-e", "ssh", "nothing-phone"])
-                    : Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.actionHost, "ssh"])
-            }
+            visible: !hostRow.isSelf && hostRow.expanded && hostRow.health === "reachable"
+            text: qsTr("Tailscale connected · SSH TCP/22 reachable")
+            color: Colours.palette.m3onSurfaceVariant
+            wrapMode: Text.Wrap
+            font: Tokens.font.label.small
         }
     }
 
@@ -462,21 +476,12 @@ Item {
             height: 7
             radius: 3.5
             color: RemoteDesktop.RemoteStatus.tunnelState === "online" ? "#43a047"
-                : RemoteDesktop.RemoteStatus.tunnelState === "degraded" ? "#d99a00"
                 : RemoteDesktop.RemoteStatus.tunnelState === "offline" ? Colours.palette.m3error
-                : Colours.palette.m3outline
+                : "#d99a00"
         }
 
         StyledText {
-            text: {
-                const state = RemoteDesktop.RemoteStatus.tunnelState;
-                const label = state === "online" ? qsTr("Online")
-                    : state === "degraded" ? qsTr("Degraded")
-                    : state === "offline" ? qsTr("Offline")
-                    : qsTr("Checking");
-                const host = RemoteDesktop.RemoteStatus.tunnelHost;
-                return host.length > 0 ? `${label} · ${host}` : label;
-            }
+            text: RemoteDesktop.RemoteStatus.tunnelHost
             color: Colours.palette.m3onSurfaceVariant
             font: Tokens.font.label.small
         }

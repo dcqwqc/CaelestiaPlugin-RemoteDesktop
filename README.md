@@ -117,3 +117,12 @@ collapse control). Each remote device occupies only a compact name/status row
 until its downward chevron is selected. Expanding a peer reveals its diagnostic
 reason and remote-control actions; refreshes do not close its expanded panel.
 The popout has a bounded height and scrolls within the screen if necessary.
+
+### Compact controls and status dots
+
+Connection actions (Connect, Wake, SSH Terminal, mirroring, Disconnect) always
+remain on the same row as the device name, even when diagnostics are collapsed.
+The small name-sized chevron sits immediately after remote device names, and
+only expands the diagnostics. Current-device diagnostics remain non-collapsible.
+Only the status dot carries the at-a-glance health state (green for ready, amber
+for checking/degraded, red for offline); word labels are hidden.

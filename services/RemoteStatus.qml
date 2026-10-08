@@ -101,8 +101,7 @@ Singleton {
         else if (deviceHealth(local) !== "reachable") errors.push(qsTr("Local device: %1").arg(deviceError(local)));
         if (tunnelState !== "online") errors.push(qsTr("MCP tunnel: %1").arg(tunnelReason || qsTr("Probe returned %1 without details.").arg(tunnelState)));
         if (connectivityState !== "online") errors.push(qsTr("Network: %1").arg(connectivityMessage || qsTr("Connectivity check pending (%1).").arg(connectivityState)));
-        return errors.join("
-");
+        return errors.join(String.fromCharCode(10));
     }
 
     // Local control-plane health. The repair button restarts the fixed system

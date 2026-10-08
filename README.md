@@ -107,3 +107,13 @@ automatically; errors clear when the corresponding check succeeds.
   which result was missing; it never displays green using stale data.
 
 Run `python3 -m unittest discover -s tests -v` to test diagnostic scenarios.
+
+### Compact, local-first Devices popout
+
+The **current machine** is always pinned at the top, regardless of per-device
+visibility overrides. Its status dot summarizes local connectivity and MCP
+health, and its error explanation is **always visible** when not green (no
+collapse control). Each remote device occupies only a compact name/status row
+until its downward chevron is selected. Expanding a peer reveals its diagnostic
+reason and remote-control actions; refreshes do not close its expanded panel.
+The popout has a bounded height and scrolls within the screen if necessary.

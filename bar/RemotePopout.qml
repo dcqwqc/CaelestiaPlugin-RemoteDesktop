@@ -12,13 +12,51 @@ import qs.services
 import dcqwqc.devices.services as RemoteDesktop
 import qs.utils
 
-ColumnLayout {
+Item {
     id: root
 
-    width: 304
-    spacing: Tokens.spacing.extraSmall
+    implicitWidth: 304
+    // Keep the bar popout within a small/rotated display; expanding several
+    // peers scrolls inside the panel rather than pushing it off screen.
+    implicitHeight: Math.min(deviceContent.implicitHeight, maxPanelHeight)
+    readonly property real maxPanelHeight: Math.max(220,
+        Math.min(680, (Quickshell.screens.length > 0 ? Quickshell.screens[0].height : 900) - 96))
 
     property var exitMenuItems: []
+    // Keep expanded peers stable across the five-second Tailscale poll, which
+    // replaces the device objects (and may recreate Repeater delegates).
+    property var expandedDevices: ({})
+    readonly property var selfDevice: RemoteDesktop.RemoteStatus.devices.find(device => device.isSelf)
+    readonly property var listedDevices: {
+        const local = selfDevice ?? {
+            id: "local-device-pending",
+            name: qsTr("This device"),
+            actionHost: "",
+            online: false,
+            sshKnown: false,
+            sshAvailable: false,
+            type: "desktop",
+            isSelf: true,
+            canSsh: false,
+            canRemoteDesktop: false,
+            canWake: false
+        };
+        const peers = RemoteDesktop.RemoteStatus.devices
+            .filter(device => !device.isSelf && root.deviceEnabled(device))
+            .sort((a, b) => root.deviceName(a).localeCompare(root.deviceName(b)));
+        return [local].concat(peers);
+    }
+
+    function isDeviceExpanded(id): bool {
+        return !!expandedDevices[id];
+    }
+
+    function toggleDeviceExpanded(id): void {
+        const next = Object.assign({}, expandedDevices);
+        if (next[id]) delete next[id];
+        else next[id] = true;
+        expandedDevices = next;
+    }
 
     readonly property var remoteSettings: {
         const plugin = Plugins.plugins.find(candidate => candidate.id === "dcqwqc/devices");
@@ -196,75 +234,124 @@ ColumnLayout {
 
         required property var device
 
+        readonly property bool isSelf: !!device.isSelf
+        readonly property bool expanded: isSelf || root.isDeviceExpanded(device.id)
         readonly property bool online: !!device.online
-        readonly property string health: RemoteDesktop.RemoteStatus.deviceHealth(device)
-        readonly property string healthError: RemoteDesktop.RemoteStatus.deviceError(device)
+        // The local device summarizes the complete status of this machine,
+        // including its MCP tunnel and connectivity dependencies.
+        readonly property string health: isSelf
+            ? RemoteDesktop.RemoteStatus.overallHealth
+            : RemoteDesktop.RemoteStatus.deviceHealth(device)
+        readonly property string healthError: isSelf
+            ? RemoteDesktop.RemoteStatus.overallError
+            : RemoteDesktop.RemoteStatus.deviceError(device)
         readonly property bool isPeer: device.id === RemoteDesktop.RemoteStatus.peerId
         readonly property bool viewing: isPeer && RemoteDesktop.RemoteStatus.viewing
         readonly property bool shared: isPeer && RemoteDesktop.RemoteStatus.shared
         readonly property bool hasSession: viewing || shared
+        readonly property string statusLabel: health === "reachable" ? qsTr("Healthy")
+            : health === "degraded" ? qsTr("Degraded")
+            : health === "offline" ? qsTr("Offline")
+            : qsTr("Checking")
 
         Layout.fillWidth: true
-        Layout.leftMargin: Tokens.padding.extraSmall
-        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.leftMargin: Tokens.padding.small
+        Layout.rightMargin: Tokens.padding.small
         Layout.topMargin: Tokens.padding.extraSmall
         Layout.bottomMargin: Tokens.padding.extraSmall
         spacing: Tokens.spacing.extraSmall
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: Tokens.spacing.extraSmall
+            spacing: Tokens.spacing.small
 
-        Item {
-            id: deviceIconWrap
+            Item {
+                id: deviceIconWrap
+                implicitWidth: 28
+                implicitHeight: 28
+                Layout.alignment: Qt.AlignVCenter
 
-            implicitWidth: deviceIcon.implicitWidth
-            implicitHeight: deviceIcon.implicitHeight
-            Layout.alignment: Qt.AlignVCenter
+                MaterialIcon {
+                    id: deviceIcon
+                    anchors.centerIn: parent
+                    text: root.deviceIcon(hostRow.device)
+                    fontStyle: Tokens.font.icon.small
+                    color: hostRow.online
+                        ? Colours.palette.m3onSurface
+                        : Colours.palette.m3onSurfaceVariant
+                }
 
-            MaterialIcon {
-                id: deviceIcon
-
-                anchors.centerIn: parent
-                text: root.deviceIcon(hostRow.device)
-                fontStyle: Tokens.font.icon.small
-                color: hostRow.online
-                    ? Colours.palette.m3onSurface
-                    : Colours.palette.m3onSurfaceVariant
+                Rectangle {
+                    width: 7
+                    height: 7
+                    radius: 3.5
+                    anchors.right: deviceIcon.right
+                    anchors.bottom: deviceIcon.bottom
+                    anchors.rightMargin: -2
+                    anchors.bottomMargin: -2
+                    color: hostRow.health === "reachable" ? "#43a047"
+                        : hostRow.health === "degraded" ? "#d99a00"
+                        : hostRow.health === "offline" ? Colours.palette.m3error
+                        : Colours.palette.m3outline
+                    border.width: 1
+                    border.color: Colours.palette.m3surface
+                }
             }
 
-            Rectangle {
-                width: 7
-                height: 7
-                radius: 3.5
-                anchors.right: deviceIcon.right
-                anchors.bottom: deviceIcon.bottom
-                anchors.rightMargin: -2
-                anchors.bottomMargin: -2
-                color: hostRow.health === "reachable"
-                    ? "#43a047"
-                    : hostRow.health === "degraded"
-                        ? "#d99a00"
-                        : hostRow.health === "offline"
-                            ? Colours.palette.m3error
-                            : Colours.palette.m3outline
-                border.width: 1
-                border.color: Colours.palette.m3surface
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                spacing: 0
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: root.deviceName(hostRow.device)
+                    elide: Text.ElideRight
+                    font: Tokens.font.body.builders.small.weight(Font.Medium).build()
+                }
+                StyledText {
+                    Layout.fillWidth: true
+                    text: hostRow.isSelf
+                        ? qsTr("This device · %1").arg(hostRow.statusLabel)
+                        : hostRow.statusLabel
+                    elide: Text.ElideRight
+                    color: hostRow.health === "reachable"
+                        ? Colours.palette.m3onSurfaceVariant : Colours.palette.m3error
+                    font: Tokens.font.label.small
+                }
+            }
+
+            // Never show an expander on the current device: its diagnostics
+            // must remain immediately readable whenever its dot is not green.
+            ActionButton {
+                visible: !hostRow.isSelf
+                icon: hostRow.expanded ? "expand_less" : "expand_more"
+                hint: hostRow.expanded ? qsTr("Hide device details") : qsTr("Show device details")
+                onClicked: root.toggleDeviceExpanded(hostRow.device.id)
             }
         }
 
         StyledText {
             Layout.fillWidth: true
-            Layout.minimumWidth: 72
-            Layout.alignment: Qt.AlignVCenter
-            text: root.deviceName(hostRow.device)
-            elide: Text.ElideRight
-            font: Tokens.font.body.builders.small.weight(Font.Medium).build()
+            Layout.leftMargin: Tokens.padding.large
+            Layout.rightMargin: Tokens.padding.extraSmall
+            visible: hostRow.health !== "reachable" && hostRow.expanded
+            text: hostRow.healthError.length > 0
+                ? hostRow.healthError : qsTr("Health check pending; no diagnostic details received yet.")
+            color: Colours.palette.m3error
+            wrapMode: Text.Wrap
+            font: Tokens.font.label.small
         }
 
+        // Remote actions and detailed errors share the same expanded panel.
+        // A collapsed peer is a single aligned row with its status dot.
         RowLayout {
-            Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
-            spacing: 0
+            Layout.fillWidth: true
+            Layout.leftMargin: Tokens.padding.large
+            Layout.rightMargin: Tokens.padding.extraSmall
+            Layout.alignment: Qt.AlignRight
+            spacing: Tokens.spacing.extraSmall
+            visible: !hostRow.isSelf && hostRow.expanded
 
             ActionButton {
                 visible: root.phoneMirrorMatches(hostRow.device)
@@ -273,7 +360,6 @@ ColumnLayout {
                 hint: qsTr("Mirror phone")
                 onClicked: Quickshell.execDetached([root.phoneMirrorBin])
             }
-
             ActionButton {
                 visible: hostRow.device.canRemoteDesktop
                 disabled: !hostRow.online || hostRow.shared
@@ -282,42 +368,42 @@ ColumnLayout {
                 hint: hostRow.viewing ? qsTr("Open remote desktop") : qsTr("Connect")
                 onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "open"])
             }
-
             ActionButton {
                 visible: hostRow.hasSession
                 icon: "link_off"
                 hint: qsTr("Disconnect")
                 onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "leave"])
             }
-
             ActionButton {
                 visible: hostRow.device.canWake
                 icon: "bolt"
                 hint: qsTr("Wake")
                 onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "wake"])
             }
-
             ActionButton {
                 visible: hostRow.device.canSsh
                 disabled: !hostRow.online || (hostRow.device.type !== "phone" && !hostRow.device.sshAvailable)
                 icon: "terminal"
                 hint: qsTr("Open terminal")
-                onClicked: hostRow.device.type === "phone" ? Quickshell.execDetached(["ghostty", "-e", "ssh", "nothing-phone"]) : Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.actionHost, "ssh"])
+                onClicked: hostRow.device.type === "phone"
+                    ? Quickshell.execDetached(["ghostty", "-e", "ssh", "nothing-phone"])
+                    : Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.actionHost, "ssh"])
             }
         }
-        } // Main host row
-
-        StyledText {
-            Layout.fillWidth: true
-            Layout.leftMargin: Tokens.padding.large
-            Layout.rightMargin: Tokens.padding.extraSmall
-            visible: hostRow.health !== "reachable"
-            text: hostRow.healthError
-            wrapMode: Text.Wrap
-            color: Colours.palette.m3error
-            font: Tokens.font.label.small
-        }
     }
+
+    Flickable {
+        anchors.fill: parent
+        clip: true
+        flickableDirection: Flickable.VerticalFlick
+        boundsBehavior: Flickable.StopAtBounds
+        contentWidth: width
+        contentHeight: deviceContent.implicitHeight
+
+        ColumnLayout {
+            id: deviceContent
+            width: parent.width
+            spacing: Tokens.spacing.extraSmall
 
     RowLayout {
         Layout.fillWidth: true
@@ -340,30 +426,10 @@ ColumnLayout {
         }
     }
 
-    RowLayout {
-        Layout.fillWidth: true
-        Layout.leftMargin: Tokens.padding.small
-        Layout.rightMargin: Tokens.padding.small
-        visible: RemoteDesktop.RemoteStatus.overallHealth !== "reachable"
-        spacing: Tokens.spacing.small
-
-        MaterialIcon {
-            text: "error"
-            color: Colours.palette.m3error
-            fontStyle: Tokens.font.icon.small
-            Layout.alignment: Qt.AlignTop
-        }
-        StyledText {
-            Layout.fillWidth: true
-            text: RemoteDesktop.RemoteStatus.overallError
-            wrapMode: Text.Wrap
-            color: Colours.palette.m3error
-            font: Tokens.font.label.small
-        }
-    }
-
+    // All devices remain listed, but only the current device is always expanded.
+    // Unlike the old filter, the local device can never be hidden by overrides.
     Repeater {
-        model: RemoteDesktop.RemoteStatus.devices.filter(device => root.deviceEnabled(device))
+        model: root.listedDevices
 
         delegate: HostRow {
             required property var modelData
@@ -414,17 +480,6 @@ ColumnLayout {
             color: Colours.palette.m3onSurfaceVariant
             font: Tokens.font.label.small
         }
-    }
-
-    StyledText {
-        Layout.fillWidth: true
-        Layout.leftMargin: Tokens.padding.large
-        Layout.rightMargin: Tokens.padding.small
-        visible: RemoteDesktop.RemoteStatus.tunnelState !== "online"
-        text: RemoteDesktop.RemoteStatus.tunnelReason
-        color: Colours.palette.m3error
-        font: Tokens.font.label.small
-        wrapMode: Text.Wrap
     }
 
     RowLayout {
@@ -508,4 +563,6 @@ ColumnLayout {
         font: Tokens.font.label.small
     }
 
+        } // deviceContent
+    } // Flickable
 }

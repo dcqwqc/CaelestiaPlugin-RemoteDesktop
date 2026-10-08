@@ -1,6 +1,7 @@
 import QtQuick
 import Caelestia.Config
 import qs.components
+import qs.components.controls
 import qs.services
 import dcqwqc.devices.services as RemoteDesktop
 
@@ -9,6 +10,18 @@ Item {
 
     implicitWidth: icon.implicitHeight + Tokens.padding.small
     implicitHeight: icon.implicitHeight
+    readonly property string health: RemoteDesktop.RemoteStatus.overallHealth
+    readonly property string healthError: RemoteDesktop.RemoteStatus.overallError
+    readonly property bool hovered: statusHover.hovered
+
+    HoverHandler { id: statusHover }
+
+    Tooltip {
+        target: root
+        delay: 250
+        text: root.health === "reachable" ? qsTr("Devices: all monitored dependencies healthy")
+            : qsTr("Devices status: %1%2%3").arg(root.health).arg(String.fromCharCode(10)).arg(root.healthError)
+    }
 
     MaterialIcon {
         id: icon
@@ -22,25 +35,6 @@ Item {
 
     // One compact status light for the remote path.
     Rectangle {
-        readonly property var host: RemoteDesktop.RemoteStatus.devices.find(device => device.isSelf)
-        readonly property string localHealth: !host
-            ? "unknown"
-            : !host.online
-                ? "offline"
-                : !host.sshKnown
-                    ? "unknown"
-                    : host.sshAvailable
-                        ? "reachable"
-                        : "degraded"
-        readonly property string tunnelHealth: RemoteDesktop.RemoteStatus.tunnelState
-        readonly property string health: localHealth === "offline" || tunnelHealth === "offline"
-            ? "offline"
-            : localHealth === "degraded" || tunnelHealth === "degraded"
-                ? "degraded"
-                : localHealth === "unknown" || tunnelHealth === "unknown"
-                    ? "unknown"
-                    : "reachable"
-
         visible: true
         width: 6
         height: 6
@@ -49,11 +43,11 @@ Item {
         anchors.bottom: icon.bottom
         anchors.rightMargin: -1
         anchors.bottomMargin: -1
-        color: health === "reachable"
+        color: root.health === "reachable"
             ? "#43a047"
-            : health === "degraded"
+            : root.health === "degraded"
                 ? "#d99a00"
-                : health === "offline"
+                : root.health === "offline"
                     ? Colours.palette.m3error
                     : Colours.palette.m3outline
         border.width: 1

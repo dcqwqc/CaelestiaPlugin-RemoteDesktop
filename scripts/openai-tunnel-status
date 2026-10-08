@@ -1,29 +1,84 @@
 #!/usr/bin/env bash
+# Discover a tunnel watchdog and report the *observed* reason behind its state.
 set -u
 
+json_result() {
+  jq -cn --arg state "$1" --arg host "$2" --arg reason "$3" \
+    '{state:$state,host:$host,reason:$reason}'
+}
+
 if (( $# == 0 )); then
-  printf '{"state":"unknown","host":""}\n'
+  json_result unknown '' 'No server-class Tailscale peer found; MCP tunnel health cannot be checked.'
   exit 0
 fi
 
-had_candidate=0
+remote_probe=$(cat <<'REMOTE'
+set -u
+watchdog="$HOME/philipedia-terminal/scripts/tunnel-watchdog.sh"
+if [[ ! -x "$watchdog" ]]; then
+  printf 'unknown\tMCP tunnel watchdog is missing or not executable at %s\n' "$watchdog"
+  exit 0
+fi
+state=$("$watchdog" --status 2>&1)
+case "$state" in online|degraded|offline) ;; *) printf 'unknown\tTunnel watchdog returned unexpected output: %s\n' "$state"; exit 0 ;; esac
+if [[ "$state" == online ]]; then
+  printf 'online\t\n'
+  exit 0
+fi
+bridge=$(systemctl --user is-active philipedia-terminal.service 2>&1 || true)
+tunnel=$(systemctl --user is-active openai-philipedia-tunnel.service 2>&1 || true)
+if [[ "$bridge" != active ]]; then
+  printf '%s\tMCP bridge service philipedia-terminal.service is %s\n' "$state" "$bridge"
+elif [[ "$tunnel" != active ]]; then
+  printf '%s\tOpenAI tunnel service openai-philipedia-tunnel.service is %s\n' "$state" "$tunnel"
+else
+  ready=$(curl -fsS --max-time 3 http://127.0.0.1:8081/readyz 2>&1) || ready="Request failed: $ready"
+  if [[ "$ready" != ready ]]; then
+    printf '%s\tMCP bridge /readyz check: %s\n' "$state" "$ready"
+  else
+    poll=$(curl -fsS --max-time 3 http://127.0.0.1:8081/metrics 2>/dev/null | awk '$1 == "commands_poll_last_successful_timestamp_seconds" {printf "%.0f", $2; exit}')
+    if [[ ! "$poll" =~ ^[0-9]+$ ]] || (( poll <= 0 )); then
+      printf '%s\tNo successful MCP command-poll timestamp reported by /metrics\n' "$state"
+    else
+      age=$(( $(date +%s) - poll ))
+      printf '%s\tLast successful MCP command poll was %ss ago (watchdog limit: %ss)\n' "$state" "$age" "${PHILIPEDIA_TUNNEL_MAX_POLL_AGE:-150}"
+    fi
+  fi
+fi
+REMOTE
+)
+
+fallback_state=unknown
+fallback_host=''
+fallback_reason='No server reported a valid MCP tunnel watchdog status.'
 for host in "$@"; do
   [[ -n "$host" ]] || continue
-  had_candidate=1
-  state="$(ssh -o BatchMode=yes -o ConnectTimeout=2 -o ConnectionAttempts=1 "$host" \
-    'test -x "$HOME/philipedia-terminal/scripts/tunnel-watchdog.sh" && "$HOME/philipedia-terminal/scripts/tunnel-watchdog.sh" --status' \
-    2>/dev/null || true)"
+  short="${host%%.*}"
+  report=$(printf '%s\n' "$remote_probe" | ssh -o BatchMode=yes -o ConnectTimeout=2 -o ConnectionAttempts=1 "$host" 'bash -s' 2>&1)
+  exit_code=$?
+  if (( exit_code != 0 )); then
+    fallback_state=offline
+    fallback_host=$short
+    fallback_reason="MCP tunnel probe over SSH to ${host} failed (exit ${exit_code}): ${report:-no diagnostic output}"
+    continue
+  fi
+  IFS=$'\t' read -r state reason <<< "$report"
   case "$state" in
-    online|degraded|offline)
-      short="${host%%.*}"
-      printf '{"state":"%s","host":"%s"}\n' "$state" "$short"
+    online) json_result online "$short" ''; exit 0 ;;
+    degraded|offline)
+      json_result "$state" "$short" "${reason:-Watchdog reported $state without diagnostic detail}"
       exit 0
+      ;;
+    unknown)
+      fallback_state=unknown
+      fallback_host=$short
+      fallback_reason="${reason:-Watchdog state is unknown on $host}"
+      ;;
+    *)
+      fallback_state=unknown
+      fallback_host=$short
+      fallback_reason="Invalid watchdog response from $host: ${report:-empty response}"
       ;;
   esac
 done
-
-if (( had_candidate )); then
-  printf '{"state":"offline","host":""}\n'
-else
-  printf '{"state":"unknown","host":""}\n'
-fi
+json_result "$fallback_state" "$fallback_host" "$fallback_reason"

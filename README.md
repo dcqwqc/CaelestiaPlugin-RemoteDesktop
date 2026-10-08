@@ -83,3 +83,27 @@ GPL-3.0-or-later, matching Caelestia.
 The bar status light now includes the OpenAI MCP tunnel used by Philipedia Terminal. Green means the local remote path and tunnel are healthy, amber means a dependency is degraded, red means a dependency is offline, and gray means a probe is still unknown. The popout also shows the tunnel state and the server that answered the health probe.
 
 Server discovery uses `device-types.conf`; it probes server-class peers and uses the first one that exposes the Philipedia tunnel watchdog, so the UI does not need a hard-coded Tailscale hostname.
+
+## Why a status light is not green
+
+A non-green light always has a diagnosis in the Devices popout (and the bar dot
+shows the aggregate reason on hover). This includes each listed device, the
+local remote/SSH path, and the Philipedia MCP tunnel. Red means reported offline,
+amber means a reachable device has a failed dependency, and gray means a probe
+has not yet finished or failed without a usable reading. Status checks refresh
+automatically; errors clear when the corresponding check succeeds.
+
+- **Tailscale offline:** shows the backend state or the peer's reported offline
+  state plus last-seen timestamp when available. Tailscale does not reveal
+  whether a remote device is powered off, asleep, or lacking connectivity, so
+  the UI does not invent that root cause.
+- **SSH degraded:** the TCP/22 diagnostic exposes the actual socket error,
+  e.g. connection refused, timed out, or DNS resolution failed. It does not
+  mistake TCP reachability for proof that SSH authentication will succeed.
+- **MCP tunnel degraded/offline:** the checker exposes the inactive service,
+  failed readiness request, stale command poll, missing watchdog, or SSH error
+  observed on the server, rather than just showing a generic degraded label.
+- **Probe unknown/error:** the status explains which probe could not run or
+  which result was missing; it never displays green using stale data.
+
+Run `python3 -m unittest discover -s tests -v` to test diagnostic scenarios.

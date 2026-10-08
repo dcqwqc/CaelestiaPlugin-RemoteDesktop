@@ -191,19 +191,14 @@ ColumnLayout {
         }
     }
 
-    component HostRow: RowLayout {
+    component HostRow: ColumnLayout {
         id: hostRow
 
         required property var device
 
         readonly property bool online: !!device.online
-        readonly property string health: !online
-            ? "offline"
-            : !device.sshKnown
-                ? "unknown"
-                : device.sshAvailable
-                    ? "reachable"
-                    : "degraded"
+        readonly property string health: RemoteDesktop.RemoteStatus.deviceHealth(device)
+        readonly property string healthError: RemoteDesktop.RemoteStatus.deviceError(device)
         readonly property bool isPeer: device.id === RemoteDesktop.RemoteStatus.peerId
         readonly property bool viewing: isPeer && RemoteDesktop.RemoteStatus.viewing
         readonly property bool shared: isPeer && RemoteDesktop.RemoteStatus.shared
@@ -215,6 +210,10 @@ ColumnLayout {
         Layout.topMargin: Tokens.padding.extraSmall
         Layout.bottomMargin: Tokens.padding.extraSmall
         spacing: Tokens.spacing.extraSmall
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Tokens.spacing.extraSmall
 
         Item {
             id: deviceIconWrap
@@ -306,6 +305,18 @@ ColumnLayout {
                 onClicked: hostRow.device.type === "phone" ? Quickshell.execDetached(["ghostty", "-e", "ssh", "nothing-phone"]) : Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.actionHost, "ssh"])
             }
         }
+        } // Main host row
+
+        StyledText {
+            Layout.fillWidth: true
+            Layout.leftMargin: Tokens.padding.large
+            Layout.rightMargin: Tokens.padding.extraSmall
+            visible: hostRow.health !== "reachable"
+            text: hostRow.healthError
+            wrapMode: Text.Wrap
+            color: Colours.palette.m3error
+            font: Tokens.font.label.small
+        }
     }
 
     RowLayout {
@@ -326,6 +337,28 @@ ColumnLayout {
             icon: RemoteDesktop.RemoteStatus.connectivityRepairing ? "sync" : "refresh"
             hint: qsTr("Restart Tailscale, SSH and remote services")
             onClicked: RemoteDesktop.RemoteStatus.repairConnectivity()
+        }
+    }
+
+    RowLayout {
+        Layout.fillWidth: true
+        Layout.leftMargin: Tokens.padding.small
+        Layout.rightMargin: Tokens.padding.small
+        visible: RemoteDesktop.RemoteStatus.overallHealth !== "reachable"
+        spacing: Tokens.spacing.small
+
+        MaterialIcon {
+            text: "error"
+            color: Colours.palette.m3error
+            fontStyle: Tokens.font.icon.small
+            Layout.alignment: Qt.AlignTop
+        }
+        StyledText {
+            Layout.fillWidth: true
+            text: RemoteDesktop.RemoteStatus.overallError
+            wrapMode: Text.Wrap
+            color: Colours.palette.m3error
+            font: Tokens.font.label.small
         }
     }
 
@@ -381,6 +414,17 @@ ColumnLayout {
             color: Colours.palette.m3onSurfaceVariant
             font: Tokens.font.label.small
         }
+    }
+
+    StyledText {
+        Layout.fillWidth: true
+        Layout.leftMargin: Tokens.padding.large
+        Layout.rightMargin: Tokens.padding.small
+        visible: RemoteDesktop.RemoteStatus.tunnelState !== "online"
+        text: RemoteDesktop.RemoteStatus.tunnelReason
+        color: Colours.palette.m3error
+        font: Tokens.font.label.small
+        wrapMode: Text.Wrap
     }
 
     RowLayout {
@@ -464,20 +508,4 @@ ColumnLayout {
         font: Tokens.font.label.small
     }
 
-    StyledText {
-        Layout.fillWidth: true
-        Layout.leftMargin: Tokens.padding.extraSmall
-        Layout.rightMargin: Tokens.padding.extraSmall
-        Layout.bottomMargin: Tokens.padding.extraSmall
-        visible: RemoteDesktop.RemoteStatus.connectivityMessage.length > 0
-            && (RemoteDesktop.RemoteStatus.connectivityRepairing
-                || RemoteDesktop.RemoteStatus.connectivityState !== "online")
-        text: RemoteDesktop.RemoteStatus.connectivityMessage
-        color: RemoteDesktop.RemoteStatus.connectivityState === "blocked"
-            || RemoteDesktop.RemoteStatus.connectivityState === "offline"
-            ? Colours.palette.m3error
-            : Colours.palette.m3onSurfaceVariant
-        wrapMode: Text.Wrap
-        font: Tokens.font.label.small
-    }
 }

@@ -40,6 +40,38 @@ Singleton {
     property var hostOnline: ({})
     property var sshProbeTargets: []
     property var sshAvailability: ({})
+    property string sshProbeError: ""
+    readonly property string sshProbeBin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/device-ssh-probe`
+    property string tailscaleError: qsTr("Tailscale status has not completed its first check.")
+    property string tailscaleBackend: "unknown"
+
+    function deviceHealth(device): string {
+        if (tailscaleError.length > 0) return "unknown";
+        if (!device.online) return "offline";
+        if (sshProbeError.length > 0) return "unknown";
+        if (!device.sshKnown) return "unknown";
+        return device.sshAvailable ? "reachable" : "degraded";
+    }
+
+    function deviceError(device): string {
+        if (tailscaleError.length > 0) return tailscaleError;
+        if (!device.online) {
+            if (device.isSelf)
+                return qsTr("Local Tailscale backend is %1; local tailnet connectivity is unavailable.").arg(tailscaleBackend);
+            const seen = String(device.lastSeen ?? "");
+            const last = seen.length > 0 && !seen.startsWith("0001-")
+                ? qsTr(" Last seen: %1.").arg(seen) : "";
+            return qsTr("Tailscale reports %1 offline; its underlying power/network cause is not observable here.").arg(device.name) + last;
+        }
+        if (sshProbeError.length > 0) return sshProbeError;
+        if (!device.sshKnown)
+            return sshProbeError.length > 0 ? sshProbeError : qsTr("SSH port 22 has not been checked yet on %1.").arg(device.actionHost);
+        if (!device.sshAvailable)
+            return String(device.sshReason ?? "").length > 0
+                ? device.sshReason
+                : qsTr("SSH TCP/22 at %1 is not reachable; the probe returned no further details.").arg(device.actionHost);
+        return "";
+    }
 
     // OpenAI MCP tunnel health is discovered from server-class devices rather
     // than hardcoding a machine name. The helper finds the server that actually
@@ -47,6 +79,31 @@ Singleton {
     property var tunnelProbeTargets: []
     property string tunnelState: "unknown"
     property string tunnelHost: ""
+    property string tunnelReason: qsTr("MCP tunnel health has not been checked yet.")
+
+    readonly property string overallHealth: {
+        const local = devices.find(device => device.isSelf);
+        const own = local ? deviceHealth(local) : "unknown";
+        const tunnel = tunnelState === "online" ? "reachable" : tunnelState;
+        if (own === "offline" || tunnel === "offline" || connectivityState === "offline" || connectivityState === "blocked")
+            return "offline";
+        if (own === "degraded" || tunnel === "degraded" || (connectivityState !== "online" && connectivityState !== "unknown"))
+            return "degraded";
+        if (own === "unknown" || tunnel === "unknown" || connectivityState === "unknown")
+            return "unknown";
+        return "reachable";
+    }
+
+    readonly property string overallError: {
+        const errors = [];
+        const local = devices.find(device => device.isSelf);
+        if (!local) errors.push(tailscaleError || qsTr("Local device is absent from the latest Tailscale status response."));
+        else if (deviceHealth(local) !== "reachable") errors.push(qsTr("Local device: %1").arg(deviceError(local)));
+        if (tunnelState !== "online") errors.push(qsTr("MCP tunnel: %1").arg(tunnelReason || qsTr("Probe returned %1 without details.").arg(tunnelState)));
+        if (connectivityState !== "online") errors.push(qsTr("Network: %1").arg(connectivityMessage || qsTr("Connectivity check pending (%1).").arg(connectivityState)));
+        return errors.join("
+");
+    }
 
     // Local control-plane health. The repair button restarts the fixed system
     // services through polkit, then user-scoped streaming/tunnel services, and
@@ -198,10 +255,20 @@ Singleton {
 
         command: ["tailscale", "status", "--json"]
         running: false
+        property string stderrText: ""
+        stderr: StdioCollector { onStreamFinished: tailscaleProc.stderrText = text.trim() }
+        onExited: code => {
+            if (code !== 0)
+                root.tailscaleError = qsTr("tailscale status --json failed (exit %1): %2").arg(code).arg(stderrText || qsTr("no error output"));
+        }
         stdout: StdioCollector {
             onStreamFinished: {
                 try {
                     const data = JSON.parse(text);
+                    root.tailscaleBackend = String(data.BackendState ?? "unknown");
+                    root.tailscaleError = data.BackendState === "Running" ? ""
+                        : qsTr("Tailscale backend state is %1%2").arg(root.tailscaleBackend)
+                            .arg(Array.isArray(data.Health) && data.Health.length > 0 ? ": " + data.Health.join("; ") : "");
                     const byHost = {};
                     const devices = [];
                     const exitNodes = [];
@@ -228,7 +295,7 @@ Singleton {
                         // TCP/22 probe below decide whether SSH is actually reachable.
                         const online = isSelf
                             ? data.BackendState === "Running" && (node.TailscaleIPs ?? []).length > 0
-                            : !!node.Online;
+                            : data.BackendState === "Running" && !!node.Online;
                         byHost[hostId] = online;
 
                         if (!isSelf && node.ExitNodeOption) {
@@ -251,6 +318,7 @@ Singleton {
                             name: node.HostName,
                             actionHost: actionHost,
                             online: online,
+                            lastSeen: String(node.LastSeen ?? ""),
                             os: node.OS || "",
                             type: root.deviceTypes[hostId]
                                 || ((node.OS || "").toLowerCase() === "android" ? "phone"
@@ -277,7 +345,8 @@ Singleton {
                             // Tailscale snapshot is being probed. Without this the
                             // icon visibly alternates gray/dark every refresh.
                             sshKnown: !online || root.sshAvailability[actionHost] !== undefined,
-                            sshAvailable: online && !!root.sshAvailability[actionHost]
+                            sshAvailable: online && !!root.sshAvailability[actionHost]?.reachable,
+                            sshReason: String(root.sshAvailability[actionHost]?.reason ?? "")
                         });
                     };
 
@@ -308,7 +377,8 @@ Singleton {
                     if (!tunnelStatusProc.running)
                         tunnelStatusProc.running = true;
                 } catch (e) {
-                    // Leave previous state on a parse failure (e.g. tailscale down).
+                    // Retain device identities but never show a stale green status.
+                    root.tailscaleError = qsTr("Cannot parse Tailscale status JSON: %1").arg(String(e));
                 }
             }
         }
@@ -320,36 +390,32 @@ Singleton {
     Process {
         id: sshProbeProc
 
-        command: {
-            const probe = [
-                "python3", "-c",
-                "import json, socket, sys\n"
-                + "results = {}\n"
-                + "for host in sys.argv[1:]:\n"
-                + "    try:\n"
-                + "        connection = socket.create_connection((host, 22), timeout=0.75)\n"
-                + "        connection.close()\n"
-                + "        results[host] = True\n"
-                + "    except OSError:\n"
-                + "        results[host] = False\n"
-                + "print(json.dumps(results))"
-            ];
-            return probe.concat(root.sshProbeTargets);
-        }
+        command: [root.sshProbeBin].concat(root.sshProbeTargets)
         running: false
+        property string stderrText: ""
+        stderr: StdioCollector { onStreamFinished: sshProbeProc.stderrText = text.trim() }
+        onExited: code => {
+            if (code !== 0)
+                root.sshProbeError = qsTr("SSH diagnostic command failed (exit %1): %2").arg(code).arg(stderrText || qsTr("no output"));
+        }
         stdout: StdioCollector {
             onStreamFinished: {
                 try {
                     const available = JSON.parse(text);
+                    if (!available || typeof available !== "object" || Array.isArray(available))
+                        throw new Error("Expected a JSON object of host diagnostics");
                     root.sshAvailability = Object.assign({}, root.sshAvailability, available);
+                    root.sshProbeError = "";
                     root.devices = root.devices.map(device => {
+                        const result = root.sshAvailability[device.actionHost];
                         const updated = Object.assign({}, device);
-                        updated.sshKnown = true;
-                        updated.sshAvailable = device.online && !!available[device.actionHost];
+                        updated.sshKnown = !device.online || result !== undefined;
+                        updated.sshAvailable = !!device.online && !!result?.reachable;
+                        updated.sshReason = String(result?.reason ?? "");
                         return updated;
                     });
                 } catch (e) {
-                    // Keep the prior disabled state when the probe cannot run.
+                    root.sshProbeError = qsTr("Cannot parse SSH diagnostics: %1").arg(String(e));
                 }
             }
         }
@@ -371,16 +437,19 @@ Singleton {
                     root.tunnelState = ["online", "degraded", "offline"].includes(state)
                         ? state
                         : "unknown";
-                    if (String(status.host ?? "").length > 0)
-                        root.tunnelHost = String(status.host);
+                    root.tunnelHost = String(status.host ?? "");
+                    root.tunnelReason = root.tunnelState === "online" ? "" : String(status.reason || qsTr("Tunnel probe returned %1 without diagnostic detail.").arg(root.tunnelState));
                 } catch (e) {
                     root.tunnelState = "unknown";
+                    root.tunnelReason = qsTr("Cannot parse MCP tunnel diagnostic response: %1").arg(String(e));
                 }
             }
         }
         onExited: code => {
-            if (code !== 0)
+            if (code !== 0) {
                 root.tunnelState = "unknown";
+                root.tunnelReason = qsTr("MCP tunnel diagnostic process exited with code %1.").arg(code);
+            }
         }
     }
 
@@ -446,8 +515,11 @@ Singleton {
             }
         }
         onExited: code => {
-            if (code !== 0)
+            if (code !== 0) {
+                root.connectivityState = "unknown";
+                root.connectivityMessage = qsTr("Connectivity diagnosis command exited with code %1.").arg(code);
                 root.connectivityRepairing = false;
+            }
         }
     }
 

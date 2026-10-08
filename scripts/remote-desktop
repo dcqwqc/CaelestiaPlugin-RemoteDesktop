@@ -97,7 +97,7 @@ fi
 #
 # Every value stays optional. A desk with no plugin, or a key the page has never
 # written, falls through to the defaults below exactly as before.
-plugin_id="dcqwqc/remotedesktop"
+plugin_id="dcqwqc/devices"
 plugin_config="${XDG_CONFIG_HOME:-$HOME/.config}/caelestia/plugins.json"
 plugin_setting() {
     [[ -r $plugin_config ]] || return 1

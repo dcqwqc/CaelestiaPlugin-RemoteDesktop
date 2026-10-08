@@ -1,7 +1,12 @@
-# RemoteDesktop
+# Devices
 
-A two-way Moonlight/Sunshine desktop link between configured hosts, in the
-Caelestia bar.
+A Caelestia hub for discovering, monitoring, and controlling connected devices
+through Tailscale, Moonlight/Sunshine, SSH, Wake-on-LAN, and optional integrations.
+The bar icon lives **inside the rounded status-icons group, immediately under
+Wi-Fi**, when using the companion [kagami-caelestia](https://github.com/dcqwqc/kagami-caelestia) fork.
+
+The repository retains its historical `CaelestiaPlugin-RemoteDesktop` URL and
+`remote-desktop` installation path so existing integrations and scripts keep working.
 
 Both machines serve and both consume, so the panel asks "is this the other one?"
 rather than "is this the machine that streams?". Each host row reports whether a
@@ -54,6 +59,20 @@ Clone into Caelestia's plugin directory:
 
 Or clone anywhere and add the parent to `path` in
 `~/.config/caelestia/plugins.json`.
+
+## Upgrade from RemoteDesktop
+
+The visible plugin name and generated plugin ID changed to **Devices**.
+After upgrading, change `dcqwqc/remotedesktop` to `dcqwqc/devices` in both
+`enabled` and `settings` in `~/.config/caelestia/plugins.json`, retaining
+all the values under the settings key. The bar entry point remains named
+`remoteDesktop` internally for compatibility; it is now rendered inside
+`StatusIcons.qml` instead of being a separate item in `bar.entries`.
+Remove the standalone `remoteDesktop` bar entry from `shell.json` to
+avoid duplicates.
+
+The Devices popout continues to provide remote desktop, SSH, wake, routes,
+connectivity checks, and device-specific overrides.
 
 ## Licence
 

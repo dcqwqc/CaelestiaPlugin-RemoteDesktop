@@ -1,9 +1,9 @@
 {
-  "name": "RemoteDesktop",
-  "version": "0.1.0",
+  "name": "Devices",
+  "version": "0.1.1",
   "author": "dcqwqc",
   "homepage": "https://github.com/dcqwqc/CaelestiaPlugin-RemoteDesktop",
-  "icon": "cast",
+  "icon": "devices",
   "description": "Discover and control remote devices through Tailscale, Moonlight/Sunshine, SSH, Wake-on-LAN, and optional device-specific integrations without hardcoded host identities.",
   "entryPoints": [
     {

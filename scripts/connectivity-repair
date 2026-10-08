@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Diagnose and repair the local services that the Remote Desktop popout relies on.
+# System services (tailscaled/sshd) are restarted by the QML side through pkexec;
+# this helper only touches user services and performs an unprivileged diagnosis.
+set -u
+
+mode=${1:-diagnose}
+
+if [[ $mode == repair-user ]]; then
+    # `try-restart` is deliberate: optional tunnels stay off when the user has
+    # them disabled, while active services get a clean restart.
+    for unit in \
+        app-dev.lizardbyte.app.Sunshine.service \
+        philipedia-mcp-tunnel.service \
+        sumi-openai-tunnel.service
+    do
+        systemctl --user try-restart "$unit" >/dev/null 2>&1 || true
+    done
+    exit 0
+fi
+
+if [[ $mode != diagnose ]]; then
+    echo "usage: connectivity-repair [diagnose|repair-user]" >&2
+    exit 2
+fi
+
+connection=$(nmcli -t -f GENERAL.CONNECTION device show wlan0 2>/dev/null | sed -n 's/^GENERAL.CONNECTION://p' | head -1)
+[[ -n ${connection:-} ]] || connection="Unknown network"
+
+backend=$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "Stopped"' 2>/dev/null || printf 'Stopped')
+if [[ $backend == Running ]]; then
+    state=online
+    message="Tailscale is connected on ${connection}."
+elif ! curl -fsSI --connect-timeout 3 --max-time 5 https://example.com >/dev/null 2>&1; then
+    state=offline
+    message="No working internet connection on ${connection}."
+elif ! curl -sSI --connect-timeout 3 --max-time 5 'https://controlplane.tailscale.com/key?v=142' >/dev/null 2>&1; then
+    # Ordinary HTTPS works but the Tailscale control plane does not. This is the
+    # exact failure seen on filtered Wi-Fi: restarting the daemon cannot remove
+    # an upstream block, so tell the user the useful next action instead of
+    # spinning forever.
+    state=blocked
+    message="${connection} is blocking Tailscale. Use mobile data or another Wi-Fi."
+else
+    state=needs-login
+    message="Tailscale can reach its control plane but is not connected. Open Tailscale and sign in."
+fi
+
+jq -cn --arg state "$state" --arg message "$message" --arg network "$connection" --arg backend "$backend" \
+    '{state:$state,message:$message,network:$network,backend:$backend}'

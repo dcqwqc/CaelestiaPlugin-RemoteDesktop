@@ -14,6 +14,7 @@ Singleton {
     readonly property string bin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/remote-desktop`
     readonly property string exitNodeBin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/tailscale-exit-node`
     readonly property string tunnelStatusBin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/openai-tunnel-status`
+    readonly property string connectivityBin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/connectivity-repair`
 
     // Tailscale exit-node state. Selecting one routes all ordinary internet
     // traffic through that peer while keeping local-LAN access available.
@@ -47,6 +48,16 @@ Singleton {
     property string tunnelState: "unknown"
     property string tunnelHost: ""
 
+    // Local control-plane health. The repair button restarts the fixed system
+    // services through polkit, then user-scoped streaming/tunnel services, and
+    // finally runs this diagnosis. `blocked` means normal HTTPS works but the
+    // Tailscale control plane is being reset upstream, so more local restarts
+    // cannot help and the UI can suggest mobile data/another Wi-Fi instead.
+    property string connectivityState: "unknown"
+    property string connectivityMessage: ""
+    property bool connectivityRepairing: false
+    property string connectivityRepairError: ""
+
     // A session has a direction, and the two halves are found in different
     // places. `viewing` is answerable here -- it is our own Moonlight client.
     // `shared` is the peer's client looking at us, which only the peer can see,
@@ -72,6 +83,20 @@ Singleton {
             tailscaleProc.running = true;
         if (!localStateProc.running)
             localStateProc.running = true;
+    }
+
+    function diagnoseConnectivity(): void {
+        if (!connectivityDiagProc.running)
+            connectivityDiagProc.running = true;
+    }
+
+    function repairConnectivity(): void {
+        if (connectivityRepairing)
+            return;
+        connectivityRepairing = true;
+        connectivityRepairError = "";
+        connectivityMessage = qsTr("Restarting Tailscale, SSH and remote services…");
+        repairUserProc.running = true;
     }
 
     function setExitNode(nodeId): void {
@@ -118,6 +143,7 @@ Singleton {
         hostsProc.running = true;
         deviceTypesProc.running = true;
         root.refresh();
+        root.diagnoseConnectivity();
     }
 
     // Read once at startup: hosts.conf is hand-edited, not something that
@@ -358,6 +384,73 @@ Singleton {
         }
     }
 
+
+    // Repair is intentionally split in two privilege domains. Optional user
+    // services use try-restart so disabled features stay disabled. The two
+    // system daemons need polkit; pkexec gives the user the normal graphical
+    // authentication prompt without installing a broad NOPASSWD sudo rule.
+    Process {
+        id: repairUserProc
+        command: [root.connectivityBin, "repair-user"]
+        running: false
+        onExited: code => {
+            if (!repairSystemProc.running)
+                repairSystemProc.running = true;
+        }
+    }
+
+    Process {
+        id: repairSystemProc
+        command: ["pkexec", "/usr/bin/systemctl", "restart", "tailscaled.service", "sshd.service"]
+        running: false
+        stderr: StdioCollector {
+            onStreamFinished: root.connectivityRepairError = text.trim()
+        }
+        onExited: code => {
+            if (code !== 0 && root.connectivityRepairError.length === 0)
+                root.connectivityRepairError = qsTr("System-service restart was cancelled or failed.");
+            connectivityRepairDelay.restart();
+        }
+    }
+
+    Timer {
+        id: connectivityRepairDelay
+        interval: 1400
+        repeat: false
+        onTriggered: {
+            root.refresh();
+            root.diagnoseConnectivity();
+        }
+    }
+
+    Process {
+        id: connectivityDiagProc
+        command: [root.connectivityBin, "diagnose"]
+        running: false
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const data = JSON.parse(text);
+                    root.connectivityState = String(data.state ?? "unknown");
+                    const message = String(data.message ?? "");
+                    root.connectivityMessage = root.connectivityRepairError.length > 0
+                        ? `${message} ${root.connectivityRepairError}`.trim()
+                        : message;
+                } catch (e) {
+                    root.connectivityState = "unknown";
+                    root.connectivityMessage = root.connectivityRepairError.length > 0
+                        ? root.connectivityRepairError
+                        : qsTr("Could not check remote connectivity.");
+                }
+                root.connectivityRepairing = false;
+            }
+        }
+        onExited: code => {
+            if (code !== 0)
+                root.connectivityRepairing = false;
+        }
+    }
+
     Process {
         id: exitNodeProc
 
@@ -435,7 +528,13 @@ Singleton {
         interval: 5000
         running: true
         repeat: true
-        onTriggered: root.refresh()
+        onTriggered: {
+            root.refresh();
+            // Re-run the cheap connectivity diagnosis too. This clears stale
+            // "network is blocking Tailscale" warnings automatically after
+            // the rescue tunnel/control plane recovers.
+            root.diagnoseConnectivity();
+        }
     }
 
     Timer {

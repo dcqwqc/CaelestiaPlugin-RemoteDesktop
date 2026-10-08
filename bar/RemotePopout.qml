@@ -9,7 +9,7 @@ import Caelestia.Plugins
 import qs.components
 import qs.components.controls
 import qs.services
-import dcqwqc.remotedesktop.services as RemoteDesktop
+import dcqwqc.devices.services as RemoteDesktop
 import qs.utils
 
 ColumnLayout {
@@ -21,7 +21,7 @@ ColumnLayout {
     property var exitMenuItems: []
 
     readonly property var remoteSettings: {
-        const plugin = Plugins.plugins.find(candidate => candidate.id === "dcqwqc/remotedesktop");
+        const plugin = Plugins.plugins.find(candidate => candidate.id === "dcqwqc/devices");
         return plugin ? plugin.settings : null;
     }
 
@@ -308,12 +308,25 @@ ColumnLayout {
         }
     }
 
-    StyledText {
+    RowLayout {
+        Layout.fillWidth: true
         Layout.topMargin: Tokens.padding.extraSmall
-        Layout.bottomMargin: 0
         Layout.leftMargin: Tokens.padding.extraSmall
-        text: qsTr("Remote desktop")
-        font: Tokens.font.body.builders.medium.weight(Font.Medium).build()
+        Layout.rightMargin: Tokens.padding.extraSmall
+        spacing: Tokens.spacing.extraSmall
+
+        StyledText {
+            Layout.fillWidth: true
+            text: qsTr("Devices")
+            font: Tokens.font.body.builders.medium.weight(Font.Medium).build()
+        }
+
+        ActionButton {
+            disabled: RemoteDesktop.RemoteStatus.connectivityRepairing
+            icon: RemoteDesktop.RemoteStatus.connectivityRepairing ? "sync" : "refresh"
+            hint: qsTr("Restart Tailscale, SSH and remote services")
+            onClicked: RemoteDesktop.RemoteStatus.repairConnectivity()
+        }
     }
 
     Repeater {
@@ -447,6 +460,23 @@ ColumnLayout {
         visible: RemoteDesktop.RemoteStatus.exitNodeError.length > 0
         text: RemoteDesktop.RemoteStatus.exitNodeError
         color: Colours.palette.m3error
+        wrapMode: Text.Wrap
+        font: Tokens.font.label.small
+    }
+
+    StyledText {
+        Layout.fillWidth: true
+        Layout.leftMargin: Tokens.padding.extraSmall
+        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.bottomMargin: Tokens.padding.extraSmall
+        visible: RemoteDesktop.RemoteStatus.connectivityMessage.length > 0
+            && (RemoteDesktop.RemoteStatus.connectivityRepairing
+                || RemoteDesktop.RemoteStatus.connectivityState !== "online")
+        text: RemoteDesktop.RemoteStatus.connectivityMessage
+        color: RemoteDesktop.RemoteStatus.connectivityState === "blocked"
+            || RemoteDesktop.RemoteStatus.connectivityState === "offline"
+            ? Colours.palette.m3error
+            : Colours.palette.m3onSurfaceVariant
         wrapMode: Text.Wrap
         font: Tokens.font.label.small
     }

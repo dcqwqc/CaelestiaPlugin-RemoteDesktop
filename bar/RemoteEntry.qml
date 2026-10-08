@@ -2,7 +2,7 @@ import QtQuick
 import Caelestia.Config
 import qs.components
 import qs.services
-import dcqwqc.remotedesktop.services as RemoteDesktop
+import dcqwqc.devices.services as RemoteDesktop
 
 Item {
     id: root
@@ -15,7 +15,7 @@ Item {
 
         anchors.centerIn: parent
 
-        text: "cast_connected"
+        text: "devices"
         color: Colours.palette.m3secondary
         fontStyle: Tokens.font.icon.small
     }

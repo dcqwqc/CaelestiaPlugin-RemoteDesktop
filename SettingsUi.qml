@@ -9,7 +9,7 @@ import qs.components
 import qs.components.controls
 import qs.modules.nexus.common
 import qs.services
-import dcqwqc.remotedesktop.services as RemoteDesktop
+import dcqwqc.devices.services as RemoteDesktop
 
 ColumnLayout {
     id: root
@@ -156,7 +156,7 @@ ColumnLayout {
         Layout.leftMargin: Tokens.padding.small
         Layout.rightMargin: Tokens.padding.small
         Layout.bottomMargin: Tokens.spacing.small
-        text: "Rename devices, hide them from Remote Desktop, or override the automatically detected icon."
+        text: "Rename devices, hide them from Devices, or override the automatically detected icon."
         color: Colours.palette.m3outline
         font: Tokens.font.label.small
         wrapMode: Text.WordWrap

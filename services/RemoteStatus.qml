@@ -290,7 +290,7 @@ Singleton {
 
     // Tailscale reports peer reachability, not whether a regular SSH daemon is
     // listening. Probe TCP/22 without authenticating so dead SSH endpoints are
-    // disabled in the popout before the user launches Kitty.
+    // disabled in the popout before the user launches Ghostty.
     Process {
         id: sshProbeProc
 

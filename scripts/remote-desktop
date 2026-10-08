@@ -306,7 +306,7 @@ case "$mode" in
         # The tray exposes this only for peers whose structured Tailscale
         # status advertises SSH. Keep the target as one argument so MagicDNS
         # names are passed through without shell interpolation.
-        nohup kitty ssh "$target" >/dev/null 2>&1 &
+        nohup ghostty -e ssh "$target" >/dev/null 2>&1 &
         exit 0
         ;;
     kb-adopt)

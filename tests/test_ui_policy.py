@@ -15,6 +15,11 @@ class DevicePanelPolicyTests(unittest.TestCase):
         self.assertIn('return [local].concat(peers)', POP)
         self.assertIn('.filter(device => !device.isSelf && root.deviceEnabled(device))', POP)
 
+    def test_hide_generic_loopback_peer_default(self):
+        self.assertIn('String(device.name ?? "").trim().toLowerCase() === "localhost"', POP)
+        self.assertIn('return [local].concat(peers)', POP)
+        self.assertIn('cfg.enabled === undefined ? root.defaultDeviceEnabled(device) : !!cfg.enabled', POP)
+
     def test_current_device_has_no_expand_control(self):
         self.assertIn('readonly property bool expanded: isSelf || root.isDeviceExpanded(device.id)', POP)
         self.assertIn('visible: !hostRow.isSelf', POP)

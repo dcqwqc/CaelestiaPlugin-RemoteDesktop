@@ -136,3 +136,7 @@ It never restarts Tailscale, sshd or streaming services. Polling continues
 automatically every five seconds (connectivity/Tailscale) and ten seconds
 (tunnel). Red diagnostics stay visible inline, without global tooltips.
 Do not reintroduce network-service restarts behind the refresh icon.
+
+### Generic loopback peer cleanup
+
+A peer named localhost is hidden from the Devices list by default. This does not disconnect it from Tailscale. A per-device explicit enabled override can show it again. The current device always remains visible.

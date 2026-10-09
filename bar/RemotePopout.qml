@@ -79,6 +79,8 @@ Item {
     }
 
     function defaultDeviceEnabled(device): bool {
+        if (!device.isSelf && String(device.name ?? "").trim().toLowerCase() === "localhost")
+            return false;
         return !!device.isSelf
             || !!device.online
             || !!device.canRemoteDesktop

@@ -55,6 +55,10 @@ ColumnLayout {
     }
 
     function defaultEnabled(device): bool {
+        // Keep the Plugins settings toggle consistent with the Devices panel.
+        // Generic peer labels remain configurable, but hidden by default.
+        if (!device.isSelf && String(device.name ?? "").trim().toLowerCase() === "localhost")
+            return false;
         return !!device.isSelf
             || !!device.online
             || !!device.canRemoteDesktop

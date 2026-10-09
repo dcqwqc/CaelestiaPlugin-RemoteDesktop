@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 POP = (ROOT / 'bar/RemotePopout.qml').read_text()
 STATUS = (ROOT / 'services/RemoteStatus.qml').read_text()
 BAR = (ROOT / 'bar/RemoteEntry.qml').read_text()
+SETTINGS_UI = (ROOT / 'SettingsUi.qml').read_text()
 
 
 class DevicePanelPolicyTests(unittest.TestCase):
@@ -91,9 +92,13 @@ class DevicePanelPolicyTests(unittest.TestCase):
         self.assertIn('color: Colours.palette.m3error', POP)
         self.assertIn('RemoteDesktop.RemoteStatus.overallError', BAR)
 
+    def test_settings_agree_with_loopback_visibility(self):
+        self.assertIn('String(device.name ?? "").trim().toLowerCase() === "localhost"', SETTINGS_UI)
+        self.assertIn('cfg.enabled === undefined ? root.defaultEnabled(device) : !!cfg.enabled', SETTINGS_UI)
+
     def test_qml_syntax(self):
         exe = shutil.which('qmlformat') or '/usr/lib/qt6/bin/qmlformat'
-        for rel in ('bar/RemotePopout.qml', 'bar/RemoteEntry.qml', 'services/RemoteStatus.qml'):
+        for rel in ('bar/RemotePopout.qml', 'bar/RemoteEntry.qml', 'services/RemoteStatus.qml', 'SettingsUi.qml'):
             with self.subTest(file=rel):
                 run = subprocess.run([exe, str(ROOT/rel)], text=True, capture_output=True)
                 self.assertEqual(run.returncode, 0, run.stderr)

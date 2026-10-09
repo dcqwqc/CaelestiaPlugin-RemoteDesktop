@@ -66,6 +66,26 @@ class DevicePanelPolicyTests(unittest.TestCase):
         self.assertIn('"#d99a00"', POP)
         self.assertIn('Colours.palette.m3error', POP)
 
+    def test_refresh_is_diagnostic_only_and_auto_polling_remains(self):
+        self.assertIn('onClicked: RemoteDesktop.RemoteStatus.refreshNow()', POP)
+        self.assertNotIn('onClicked: RemoteDesktop.RemoteStatus.repairConnectivity()', POP)
+        self.assertIn('function refreshNow(): void', STATUS)
+        self.assertIn('root.diagnoseConnectivity();', STATUS)
+        self.assertIn('if (!tunnelStatusProc.running)', STATUS)
+        self.assertIn('interval: 5000', STATUS)
+        self.assertIn('interval: 10000', STATUS)
+        # Never tear down the only remote-access path by clicking refresh.
+        self.assertNotIn('"pkexec"', STATUS)
+        self.assertNotIn('repairUserProc.running = true', STATUS)
+        self.assertNotIn('systemctl", "restart"', STATUS)
+
+    def test_no_oversized_device_tooltips_but_inline_errors_remain(self):
+        self.assertNotIn('Tooltip {', POP)
+        self.assertNotIn('Tooltip {', BAR)
+        self.assertIn('visible: hostRow.health !== "reachable" && hostRow.expanded', POP)
+        self.assertIn('color: Colours.palette.m3error', POP)
+        self.assertIn('RemoteDesktop.RemoteStatus.overallError', BAR)
+
     def test_qml_syntax(self):
         exe = shutil.which('qmlformat') or '/usr/lib/qt6/bin/qmlformat'
         for rel in ('bar/RemotePopout.qml', 'bar/RemoteEntry.qml', 'services/RemoteStatus.qml'):

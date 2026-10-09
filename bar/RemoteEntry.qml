@@ -16,13 +16,6 @@ Item {
 
     HoverHandler { id: statusHover }
 
-    Tooltip {
-        target: root
-        delay: 250
-        text: root.health === "reachable" ? qsTr("Devices")
-            : qsTr("Devices%1%2").arg(String.fromCharCode(10)).arg(root.healthError)
-    }
-
     MaterialIcon {
         id: icon
 

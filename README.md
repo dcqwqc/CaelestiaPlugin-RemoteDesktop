@@ -86,8 +86,8 @@ Server discovery uses `device-types.conf`; it probes server-class peers and uses
 
 ## Why a status light is not green
 
-A non-green light always has a diagnosis in the Devices popout (and the bar dot
-shows the aggregate reason on hover). This includes each listed device, the
+A non-green light always has a diagnosis in the Devices popout. The bar
+shows a compact status dot; open the panel for details instead of a giant tooltip. This includes each listed device, the
 local remote/SSH path, and the Philipedia MCP tunnel. Red means reported offline,
 amber means a reachable device has a failed dependency, and gray means a probe
 has not yet finished or failed without a usable reading. Status checks refresh
@@ -115,7 +115,7 @@ visibility overrides. Its status dot summarizes local connectivity and MCP
 health, and its error explanation is **always visible** when not green (no
 collapse control). Each remote device occupies only a compact name/status row
 until its downward chevron is selected. Expanding a peer reveals its diagnostic
-reason and remote-control actions; refreshes do not close its expanded panel.
+reason; remote-control actions remain on the compact row, and refreshes do not close expanded panels.
 The popout has a bounded height and scrolls within the screen if necessary.
 
 ### Compact controls and status dots
@@ -126,3 +126,13 @@ The small name-sized chevron sits immediately after remote device names, and
 only expands the diagnostics. Current-device diagnostics remain non-collapsible.
 Only the status dot carries the at-a-glance health state (green for ready, amber
 for checking/degraded, red for offline); word labels are hidden.
+
+
+### Safe refresh
+
+The Devices header refresh button is read-only: it rechecks Tailscale,
+connectivity, SSH/TCP reachability, tunnel and remote-desktop session state.
+It never restarts Tailscale, sshd or streaming services. Polling continues
+automatically every five seconds (connectivity/Tailscale) and ten seconds
+(tunnel). Red diagnostics stay visible inline, without global tooltips.
+Do not reintroduce network-service restarts behind the refresh icon.

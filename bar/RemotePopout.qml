@@ -223,10 +223,6 @@ Item {
         font: Tokens.font.icon.small
         shapeMorph: false
 
-        Tooltip {
-            target: btn
-            text: btn.hint
-        }
     }
 
     component HostRow: ColumnLayout {
@@ -433,10 +429,9 @@ Item {
         }
 
         ActionButton {
-            disabled: RemoteDesktop.RemoteStatus.connectivityRepairing
-            icon: RemoteDesktop.RemoteStatus.connectivityRepairing ? "sync" : "refresh"
-            hint: qsTr("Restart Tailscale, SSH and remote services")
-            onClicked: RemoteDesktop.RemoteStatus.repairConnectivity()
+            icon: "refresh"
+            hint: qsTr("Check device connections now")
+            onClicked: RemoteDesktop.RemoteStatus.refreshNow()
         }
     }
 

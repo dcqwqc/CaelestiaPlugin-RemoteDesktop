@@ -104,11 +104,8 @@ Singleton {
         return errors.join(String.fromCharCode(10));
     }
 
-    // Local control-plane health. The repair button restarts the fixed system
-    // services through polkit, then user-scoped streaming/tunnel services, and
-    // finally runs this diagnosis. `blocked` means normal HTTPS works but the
-    // Tailscale control plane is being reset upstream, so more local restarts
-    // cannot help and the UI can suggest mobile data/another Wi-Fi instead.
+    // Diagnose connectivity without restarting remote-access services.
+    // A blocked control plane often cannot be repaired by local restarts.
     property string connectivityState: "unknown"
     property string connectivityMessage: ""
     property bool connectivityRepairing: false
@@ -141,18 +138,30 @@ Singleton {
             localStateProc.running = true;
     }
 
+    // Read-only, on-demand diagnosis. Never restart tailscaled, sshd or any
+    // service from the refresh control: it may be the user's only remote path.
+    // Polls run automatically as well, so this is just an immediate recheck.
+    function refreshNow(): void {
+        root.refresh();
+        root.diagnoseConnectivity();
+        if (!tunnelStatusProc.running)
+            tunnelStatusProc.running = true;
+        if (!linkStateProc.running)
+            linkStateProc.running = true;
+        if (!sshProbeProc.running && root.sshProbeTargets.length > 0)
+            sshProbeProc.running = true;
+    }
+
     function diagnoseConnectivity(): void {
         if (!connectivityDiagProc.running)
             connectivityDiagProc.running = true;
     }
 
+    // Compatibility with older callers: repair requests are diagnostic-only
+    // until a separate, explicitly confirmed and connection-safe repair flow
+    // is designed.
     function repairConnectivity(): void {
-        if (connectivityRepairing)
-            return;
-        connectivityRepairing = true;
-        connectivityRepairError = "";
-        connectivityMessage = qsTr("Restarting Tailscale, SSH and remote services…");
-        repairUserProc.running = true;
+        root.refreshNow();
     }
 
     function setExitNode(nodeId): void {
@@ -452,44 +461,6 @@ Singleton {
         }
     }
 
-
-    // Repair is intentionally split in two privilege domains. Optional user
-    // services use try-restart so disabled features stay disabled. The two
-    // system daemons need polkit; pkexec gives the user the normal graphical
-    // authentication prompt without installing a broad NOPASSWD sudo rule.
-    Process {
-        id: repairUserProc
-        command: [root.connectivityBin, "repair-user"]
-        running: false
-        onExited: code => {
-            if (!repairSystemProc.running)
-                repairSystemProc.running = true;
-        }
-    }
-
-    Process {
-        id: repairSystemProc
-        command: ["pkexec", "/usr/bin/systemctl", "restart", "tailscaled.service", "sshd.service"]
-        running: false
-        stderr: StdioCollector {
-            onStreamFinished: root.connectivityRepairError = text.trim()
-        }
-        onExited: code => {
-            if (code !== 0 && root.connectivityRepairError.length === 0)
-                root.connectivityRepairError = qsTr("System-service restart was cancelled or failed.");
-            connectivityRepairDelay.restart();
-        }
-    }
-
-    Timer {
-        id: connectivityRepairDelay
-        interval: 1400
-        repeat: false
-        onTriggered: {
-            root.refresh();
-            root.diagnoseConnectivity();
-        }
-    }
 
     Process {
         id: connectivityDiagProc

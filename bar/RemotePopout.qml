@@ -543,6 +543,11 @@ Item {
             Menu {
                 id: routeMenu
 
+                // Menu falls back to attachTo.parent when there is no QsWindow.
+                // That parent is a RowLayout here, so its anchors.fill binding
+                // conflicts with layout geometry (undefined Qt behavior).
+                // Use the popout root for the menu overlay instead.
+                parent: root
                 attachTo: routePicker
                 items: root.exitMenuItems
                 active: null

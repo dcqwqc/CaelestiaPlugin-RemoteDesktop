@@ -98,6 +98,12 @@ class DevicePanelPolicyTests(unittest.TestCase):
         self.assertIn('replaced by a real watchdog probe as', STATUS)
         self.assertIn('root.tunnelProbeTargets.length > 0)', STATUS)
 
+    def test_route_menu_overlay_does_not_attach_to_row_layout(self):
+        # Menu.qml fills its dynamically selected parent with anchors. Its
+        # fallback parent (the route picker's RowLayout) causes Qt warnings and
+        # undefined behavior. The popout root is a plain Item instead.
+        self.assertIn('parent: root' + chr(10) + '                attachTo: routePicker', POP)
+
     def test_no_oversized_device_tooltips_but_inline_errors_remain(self):
         self.assertNotIn('Tooltip {', POP)
         self.assertNotIn('Tooltip {', BAR)

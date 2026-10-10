@@ -379,11 +379,32 @@ Singleton {
                     if (!sshProbeProc.running && root.sshProbeTargets.length > 0)
                         sshProbeProc.running = true;
 
-                    root.tunnelProbeTargets = devices
-                        .filter(device => device.type === "server" && !device.isSelf)
+                    const tunnelServers = devices
+                        .filter(device => device.type === "server" && !device.isSelf);
+                    root.tunnelProbeTargets = tunnelServers
+                        .filter(device => device.online)
                         .map(device => device.actionHost);
-                    if (!tunnelStatusProc.running)
-                        tunnelStatusProc.running = true;
+                    if (root.tunnelProbeTargets.length > 0) {
+                        // A server has just appeared in the fresh Tailscale
+                        // snapshot. Probe immediately instead of waiting for
+                        // the slower tunnel timer.
+                        if (!tunnelStatusProc.running)
+                            tunnelStatusProc.running = true;
+                    } else if (tunnelServers.length > 0) {
+                        // Do not spend every tunnel interval waiting for SSH
+                        // to time out when Tailscale already has a stronger,
+                        // fresher answer. This state is recomputed every five
+                        // seconds and is replaced by a real watchdog probe as
+                        // soon as any server comes online.
+                        const names = tunnelServers.map(device => device.name).join(", ");
+                        root.tunnelState = "offline";
+                        root.tunnelHost = "";
+                        root.tunnelReason = qsTr("Server %1 is offline in the latest Tailscale status; MCP tunnel health cannot be checked.").arg(names);
+                    } else {
+                        root.tunnelState = "unknown";
+                        root.tunnelHost = "";
+                        root.tunnelReason = qsTr("No server-class Tailscale peer is configured; MCP tunnel health cannot be checked.");
+                    }
                 } catch (e) {
                     // Retain device identities but never show a stale green status.
                     root.tailscaleError = qsTr("Cannot parse Tailscale status JSON: %1").arg(String(e));
@@ -561,7 +582,7 @@ Singleton {
         repeat: true
         triggeredOnStart: true
         onTriggered: {
-            if (!tunnelStatusProc.running)
+            if (!tunnelStatusProc.running && root.tunnelProbeTargets.length > 0)
                 tunnelStatusProc.running = true;
         }
     }

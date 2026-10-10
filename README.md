@@ -103,6 +103,9 @@ automatically; errors clear when the corresponding check succeeds.
 - **MCP tunnel degraded/offline:** the checker exposes the inactive service,
   failed readiness request, stale command poll, missing watchdog, or SSH error
   observed on the server, rather than just showing a generic degraded label.
+  If every configured server is already offline in the latest Tailscale
+  snapshot, the panel reports that immediately instead of waiting for an SSH
+  timeout; it resumes watchdog probing as soon as a server comes online.
 - **Probe unknown/error:** the status explains which probe could not run or
   which result was missing; it never displays green using stale data.
 

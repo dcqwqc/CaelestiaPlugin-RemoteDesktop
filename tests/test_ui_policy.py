@@ -85,6 +85,13 @@ class DevicePanelPolicyTests(unittest.TestCase):
         self.assertNotIn('repairUserProc.running = true', STATUS)
         self.assertNotIn('systemctl", "restart"', STATUS)
 
+    def test_tunnel_refresh_uses_latest_tailscale_reachability(self):
+        self.assertIn('.filter(device => device.online)', STATUS)
+        self.assertIn('if (root.tunnelProbeTargets.length > 0)', STATUS)
+        self.assertIn('is offline in the latest Tailscale status', STATUS)
+        self.assertIn('replaced by a real watchdog probe as', STATUS)
+        self.assertIn('root.tunnelProbeTargets.length > 0)', STATUS)
+
     def test_no_oversized_device_tooltips_but_inline_errors_remain(self):
         self.assertNotIn('Tooltip {', POP)
         self.assertNotIn('Tooltip {', BAR)

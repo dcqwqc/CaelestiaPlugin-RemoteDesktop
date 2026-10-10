@@ -60,6 +60,7 @@ ColumnLayout {
         if (!device.isSelf && String(device.name ?? "").trim().toLowerCase() === "localhost")
             return false;
         return !!device.isSelf
+            || device.type === "server"
             || !!device.online
             || !!device.canRemoteDesktop
             || !!device.canWake

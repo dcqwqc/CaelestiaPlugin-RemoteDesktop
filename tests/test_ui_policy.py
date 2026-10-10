@@ -21,6 +21,10 @@ class DevicePanelPolicyTests(unittest.TestCase):
         self.assertIn('return [local].concat(peers)', POP)
         self.assertIn('cfg.enabled === undefined ? root.defaultDeviceEnabled(device) : !!cfg.enabled', POP)
 
+    def test_offline_servers_remain_visible(self):
+        self.assertIn('|| device.type === "server"', POP)
+        self.assertIn('|| device.type === "server"', SETTINGS_UI)
+
     def test_current_device_has_no_expand_control(self):
         self.assertIn('readonly property bool expanded: isSelf || root.isDeviceExpanded(device.id)', POP)
         self.assertIn('visible: !hostRow.isSelf', POP)
@@ -86,6 +90,8 @@ class DevicePanelPolicyTests(unittest.TestCase):
         self.assertNotIn('systemctl", "restart"', STATUS)
 
     def test_tunnel_refresh_uses_latest_tailscale_reachability(self):
+        self.assertIn('device.tunnelCandidate', STATUS)
+        self.assertIn('explicitTunnelTargets.length > 0', STATUS)
         self.assertIn('.filter(device => device.online)', STATUS)
         self.assertIn('if (root.tunnelProbeTargets.length > 0)', STATUS)
         self.assertIn('is offline in the latest Tailscale status', STATUS)

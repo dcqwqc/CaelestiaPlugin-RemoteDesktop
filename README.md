@@ -82,7 +82,12 @@ GPL-3.0-or-later, matching Caelestia.
 
 The bar status light now includes the OpenAI MCP tunnel used by Philipedia Terminal. Green means the local remote path and tunnel are healthy, amber means a dependency is degraded, red means a dependency is offline, and gray means a probe is still unknown. The popout also shows the tunnel state and the server that answered the health probe.
 
-Server discovery uses `device-types.conf`; it probes server-class peers and uses the first one that exposes the Philipedia tunnel watchdog, so the UI does not need a hard-coded Tailscale hostname.
+Server discovery uses `device-types.conf`. An optional third-column
+`mcp-tunnel` role identifies the peers that host the tunnel watchdog without
+hard-coding a Tailscale hostname in the plugin. For compatibility, when no peer
+has that role, all server-class peers are probed. Server-class peers remain
+visible in the Devices popout while offline so the warning always has a matching
+device row.
 
 ## Why a status light is not green
 

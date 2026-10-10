@@ -34,6 +34,7 @@ Singleton {
     // now it is the only place.
     property var configuredHosts: ({})
     property var deviceTypes: ({})
+    property var deviceRoles: ({})
     readonly property string deviceTypesFile: `${Quickshell.env("HOME")}/.config/caelestia/remote-desktop/device-types.conf`
 
     property var devices: []
@@ -245,6 +246,7 @@ Singleton {
         stdout: StdioCollector {
             onStreamFinished: {
                 const types = {};
+                const roles = {};
                 for (const rawLine of text.split("\n")) {
                     const line = rawLine.trim();
                     if (!line.length || line.startsWith("#"))
@@ -252,8 +254,11 @@ Singleton {
                     const parts = line.split(/\s+/);
                     if (parts.length >= 2)
                         types[parts[0].toLowerCase()] = parts[1].toLowerCase();
+                    if (parts.length >= 3)
+                        roles[parts[0].toLowerCase()] = parts.slice(2).map(value => value.toLowerCase());
                 }
                 root.deviceTypes = types;
+                root.deviceRoles = roles;
             }
         }
     }
@@ -332,6 +337,7 @@ Singleton {
                                 || ((node.OS || "").toLowerCase() === "android" ? "phone"
                                     : (node.OS || "").toLowerCase() === "ios" ? "tablet"
                                     : "desktop"),
+                            tunnelCandidate: (root.deviceRoles[hostId] ?? []).includes("mcp-tunnel"),
                             isSelf: isSelf,
                             // Configured in hosts.conf, never inferred from
                             // tailnet membership. Both hosts serve and both
@@ -379,8 +385,14 @@ Singleton {
                     if (!sshProbeProc.running && root.sshProbeTargets.length > 0)
                         sshProbeProc.running = true;
 
-                    const tunnelServers = devices
-                        .filter(device => device.type === "server" && !device.isSelf);
+                    const explicitTunnelTargets = devices
+                        .filter(device => device.tunnelCandidate && !device.isSelf);
+                    // Existing two-column device-types.conf files remain
+                    // compatible. Once any peer has an explicit mcp-tunnel
+                    // role, only those peers participate in this health check.
+                    const tunnelServers = explicitTunnelTargets.length > 0
+                        ? explicitTunnelTargets
+                        : devices.filter(device => device.type === "server" && !device.isSelf);
                     root.tunnelProbeTargets = tunnelServers
                         .filter(device => device.online)
                         .map(device => device.actionHost);

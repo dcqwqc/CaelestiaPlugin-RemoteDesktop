@@ -9,6 +9,7 @@ POP = (ROOT / 'bar/RemotePopout.qml').read_text()
 STATUS = (ROOT / 'services/RemoteStatus.qml').read_text()
 BAR = (ROOT / 'bar/RemoteEntry.qml').read_text()
 SETTINGS_UI = (ROOT / 'SettingsUi.qml').read_text()
+QUEST = (ROOT / 'quest/QuestSession.qml').read_text()
 
 
 class DevicePanelPolicyTests(unittest.TestCase):
@@ -115,9 +116,40 @@ class DevicePanelPolicyTests(unittest.TestCase):
         self.assertIn('String(device.name ?? "").trim().toLowerCase() === "localhost"', SETTINGS_UI)
         self.assertIn('cfg.enabled === undefined ? root.defaultEnabled(device) : !!cfg.enabled', SETTINGS_UI)
 
+    def test_headset_desktop_choice_only_on_local_device(self):
+        self.assertIn('active: hostRow.isSelf && Quest.QuestSession.available', POP)
+        self.assertIn('sourceComponent: HeadsetDesktop {}', POP)
+        # No A/B jargon or explanatory status lines; only errors are shown.
+        self.assertNotIn('Desktop B', POP)
+        self.assertNotIn('A Shared', POP)
+
+    def test_private_choice_starts_it_and_follows_cli(self):
+        # `select private` starts the private desktop when needed.
+        self.assertIn('choice.session.selectPrivate()', POP)
+        self.assertIn('root.run("select-private", ["select", "private"]);', QUEST)
+        # Checked state follows the CLI answer (or the pending request).
+        self.assertIn('choice.session.privateSelected && !choice.wantsShared', POP)
+        self.assertIn('readonly property bool privateSelected: available && mode === "private"', QUEST)
+        self.assertIn('root.privateReady = data.private_ready === true;', QUEST)
+
+    def test_headset_row_mirrors_instead_of_ssh(self):
+        self.assertIn('&& /quest/i.test(`${node.HostName} ${actionHost}`) ? "headset"', STATUS)
+        self.assertIn('return "head_mounted_device";', POP)
+        self.assertIn('visible: hostRow.device.canSsh && !hostRow.isHeadset', POP)
+        self.assertIn('Quickshell.execDetached([root.questMirrorBin]);', POP)
+        self.assertIn('running: root.visible', POP)
+
+    def test_quest_cli_failures_clear_availability_and_propagate(self):
+        self.assertIn('if (code !== 0 || !validMode) {' + chr(10) + '            root.available = false;', QUEST)
+        self.assertIn('if (!running && !didStart && command.length > 0)', QUEST)
+        self.assertIn('[ -x "$0" ] ||', QUEST)
+        self.assertIn('root.actionError = reported || err', QUEST)
+        self.assertIn('${Quickshell.env("HOME")}/.local/bin/qsw-session-mode', QUEST)
+
     def test_qml_syntax(self):
         exe = shutil.which('qmlformat') or '/usr/lib/qt6/bin/qmlformat'
-        for rel in ('bar/RemotePopout.qml', 'bar/RemoteEntry.qml', 'services/RemoteStatus.qml', 'SettingsUi.qml'):
+        for rel in ('bar/RemotePopout.qml', 'bar/RemoteEntry.qml', 'services/RemoteStatus.qml', 'SettingsUi.qml',
+                    'quest/QuestSession.qml'):
             with self.subTest(file=rel):
                 run = subprocess.run([exe, str(ROOT/rel)], text=True, capture_output=True)
                 self.assertEqual(run.returncode, 0, run.stderr)

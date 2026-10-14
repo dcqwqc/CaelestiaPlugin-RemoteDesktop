@@ -334,7 +334,9 @@ Singleton {
                             lastSeen: String(node.LastSeen ?? ""),
                             os: node.OS || "",
                             type: root.deviceTypes[hostId]
-                                || ((node.OS || "").toLowerCase() === "android" ? "phone"
+                                || ((node.OS || "").toLowerCase() === "android"
+                                    && /quest/i.test(`${node.HostName} ${actionHost}`) ? "headset"
+                                    : (node.OS || "").toLowerCase() === "android" ? "phone"
                                     : (node.OS || "").toLowerCase() === "ios" ? "tablet"
                                     : "desktop"),
                             tunnelCandidate: (root.deviceRoles[hostId] ?? []).includes("mcp-tunnel"),

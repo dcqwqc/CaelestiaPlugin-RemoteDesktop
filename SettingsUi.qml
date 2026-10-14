@@ -24,7 +24,8 @@ ColumnLayout {
         { label: "Laptop", value: "laptop" },
         { label: "Server", value: "dns" },
         { label: "Phone", value: "smartphone" },
-        { label: "Tablet", value: "tablet_mac" }
+        { label: "Tablet", value: "tablet_mac" },
+        { label: "VR headset", value: "head_mounted_device" }
     ]
 
     readonly property var devices: {
@@ -90,6 +91,8 @@ ColumnLayout {
             return "laptop";
         if (type === "tablet")
             return "tablet_mac";
+        if (type === "headset")
+            return "head_mounted_device";
         return "desktop_windows";
     }
 

@@ -4,12 +4,14 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
+import Caelestia.Components
 import Caelestia.Config
 import Caelestia.Plugins
 import qs.components
 import qs.components.controls
 import qs.services
 import dcqwqc.devices.services as RemoteDesktop
+import dcqwqc.devices.quest as Quest
 import qs.utils
 
 Item {
@@ -83,6 +85,7 @@ Item {
             return false;
         return !!device.isSelf
             || device.type === "server"
+            || device.type === "headset"
             || !!device.online
             || !!device.canRemoteDesktop
             || !!device.canWake
@@ -104,6 +107,8 @@ Item {
             return "laptop";
         if (type === "tablet")
             return "tablet_mac";
+        if (type === "headset")
+            return "head_mounted_device";
         return "desktop_windows";
     }
 
@@ -166,6 +171,40 @@ Item {
                 root.phoneMirrorConfigured = false;
             }
         }
+    }
+
+    // Quest mirroring works over USB or wireless ADB, independently of the
+    // headset's Tailscale state, so it has its own reachability probe.
+    readonly property string questMirrorBin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/quest-mirror`
+    property bool questMirrorAvailable: false
+    property bool questMirrorRunning: false
+    property string questMirrorTransport: ""
+
+    Process {
+        id: questMirrorProbe
+        command: [root.questMirrorBin, "status"]
+        running: true
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const data = JSON.parse(text);
+                    root.questMirrorAvailable = !!data.available;
+                    root.questMirrorRunning = !!data.running;
+                    root.questMirrorTransport = String(data.transport ?? "");
+                } catch (e) {
+                    root.questMirrorAvailable = false;
+                    root.questMirrorRunning = false;
+                }
+            }
+        }
+    }
+
+    // Only while the popout is open: cheap adb/pgrep checks.
+    Timer {
+        interval: 3000
+        repeat: true
+        running: root.visible
+        onTriggered: if (!questMirrorProbe.running) questMirrorProbe.running = true
     }
 
     function syncExitMenu(): void {
@@ -234,12 +273,16 @@ Item {
         required property var device
 
         readonly property bool isSelf: !!device.isSelf
+        readonly property bool isHeadset: device.type === "headset"
         readonly property bool expanded: isSelf || root.isDeviceExpanded(device.id)
-        readonly property bool online: !!device.online
+        // A headset counts as reachable whenever ADB reaches it (USB or
+        // network), even while its Tailscale client is asleep.
+        readonly property bool online: !!device.online || (isHeadset && root.questMirrorAvailable)
         // The local device summarizes the complete status of this machine,
         // including its MCP tunnel and connectivity dependencies.
         readonly property string health: isSelf
             ? RemoteDesktop.RemoteStatus.overallHealth
+            : isHeadset ? (root.questMirrorAvailable ? "reachable" : "offline")
             : RemoteDesktop.RemoteStatus.deviceHealth(device)
         readonly property string healthError: isSelf
             ? RemoteDesktop.RemoteStatus.overallError
@@ -342,6 +385,17 @@ Item {
                 spacing: 0
 
                 ActionButton {
+                    visible: hostRow.isHeadset
+                    disabled: !root.questMirrorAvailable && !root.questMirrorRunning
+                    accent: root.questMirrorRunning
+                    icon: root.questMirrorRunning ? "link_off" : "link"
+                    hint: root.questMirrorRunning ? qsTr("Stop mirroring") : qsTr("Mirror headset")
+                    onClicked: {
+                        Quickshell.execDetached([root.questMirrorBin]);
+                        root.questMirrorRunning = !root.questMirrorRunning;
+                    }
+                }
+                ActionButton {
                     visible: root.phoneMirrorMatches(hostRow.device)
                     disabled: !hostRow.online
                     icon: "link"
@@ -369,7 +423,7 @@ Item {
                     onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "wake"])
                 }
                 ActionButton {
-                    visible: hostRow.device.canSsh
+                    visible: hostRow.device.canSsh && !hostRow.isHeadset
                     disabled: !hostRow.online || (hostRow.device.type !== "phone" && !hostRow.device.sshAvailable)
                     icon: "terminal"
                     hint: qsTr("Open terminal")
@@ -385,7 +439,9 @@ Item {
             Layout.leftMargin: Tokens.padding.large
             Layout.rightMargin: Tokens.padding.extraSmall
             visible: hostRow.health !== "reachable" && hostRow.expanded
-            text: hostRow.healthError.length > 0
+            text: hostRow.isHeadset
+                ? qsTr("Not reachable over ADB · plug in USB once to enable wireless")
+                : hostRow.healthError.length > 0
                 ? hostRow.healthError : qsTr("Health check pending; no diagnostic details received yet.")
             color: Colours.palette.m3error
             wrapMode: Text.Wrap
@@ -398,8 +454,102 @@ Item {
             Layout.leftMargin: Tokens.padding.large
             Layout.rightMargin: Tokens.padding.extraSmall
             visible: !hostRow.isSelf && hostRow.expanded && hostRow.health === "reachable"
-            text: qsTr("Tailscale connected · SSH TCP/22 reachable")
+            text: hostRow.isHeadset
+                ? (root.questMirrorTransport === "usb" ? qsTr("ADB over USB") : qsTr("ADB over network"))
+                : qsTr("Tailscale connected · SSH TCP/22 reachable")
             color: Colours.palette.m3onSurfaceVariant
+            wrapMode: Text.Wrap
+            font: Tokens.font.label.small
+        }
+
+        // Which desktop of this computer the headset shows and controls.
+        Loader {
+            Layout.fillWidth: true
+            active: hostRow.isSelf && Quest.QuestSession.available
+            visible: active
+            sourceComponent: HeadsetDesktop {}
+        }
+    }
+
+    // Shared: this desktop, as it is. Private: a separate desktop with its
+    // own windows, pointer and keyboard, started on demand.
+    component HeadsetDesktop: ColumnLayout {
+        id: choice
+
+        readonly property var session: Quest.QuestSession
+        readonly property bool wantsPrivate: session.pendingAction === "select-private" || session.pendingAction === "start"
+        readonly property bool wantsShared: session.pendingAction === "select-shared"
+
+        spacing: Tokens.spacing.extraSmall
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Tokens.spacing.small
+
+            Item {
+                implicitWidth: 28
+                implicitHeight: 28
+                Layout.alignment: Qt.AlignVCenter
+
+                MaterialIcon {
+                    anchors.centerIn: parent
+                    text: "head_mounted_device"
+                    fontStyle: Tokens.font.icon.small
+                    color: Colours.palette.m3onSurfaceVariant
+                }
+            }
+
+            ButtonRow {
+                Layout.fillWidth: true
+                spacing: Tokens.spacing.extraSmall / 2
+
+                IconTextButton {
+                    fillWidth: true
+                    isToggle: true
+                    type: IconTextButton.Tonal
+                    icon: "screen_share"
+                    text: qsTr("Shared")
+                    font: Tokens.font.label.medium
+                    verticalPadding: Tokens.padding.extraSmall
+                    checked: choice.wantsShared || (choice.session.sharedSelected && !choice.wantsPrivate)
+                    internalChecked: checked
+                    disabled: choice.session.busy
+                    onClicked: if (!choice.session.sharedSelected) choice.session.select("shared")
+                }
+
+                IconTextButton {
+                    fillWidth: true
+                    isToggle: true
+                    type: IconTextButton.Tonal
+                    icon: "lock_person"
+                    text: qsTr("Private")
+                    font: Tokens.font.label.medium
+                    verticalPadding: Tokens.padding.extraSmall
+                    checked: choice.wantsPrivate || (choice.session.privateSelected && !choice.wantsShared)
+                    internalChecked: checked
+                    disabled: choice.session.busy
+                    // Choosing Private starts it when needed.
+                    onClicked: if (!choice.session.privateSelected) choice.session.selectPrivate()
+                }
+            }
+
+            // A private desktop left running in the background can be closed
+            // here; it otherwise keeps its windows for next time.
+            ActionButton {
+                visible: choice.session.privateReady && choice.session.sharedSelected
+                disabled: choice.session.busy
+                icon: "power_settings_new"
+                hint: qsTr("Close the private desktop")
+                onClicked: choice.session.stop()
+            }
+        }
+
+        StyledText {
+            Layout.fillWidth: true
+            Layout.leftMargin: 28 + Tokens.spacing.small
+            visible: !choice.session.busy && (choice.session.actionError.length > 0 || choice.session.statusError.length > 0)
+            text: choice.session.actionError.length > 0 ? choice.session.actionError : choice.session.statusError
+            color: Colours.palette.m3error
             wrapMode: Text.Wrap
             font: Tokens.font.label.small
         }

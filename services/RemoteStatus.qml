@@ -4,6 +4,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Caelestia
+import "DeviceIdentity.js" as DeviceIdentity
 
 Singleton {
     id: root
@@ -47,11 +48,7 @@ Singleton {
     property string tailscaleBackend: "unknown"
 
     function deviceHealth(device): string {
-        if (tailscaleError.length > 0) return "unknown";
-        if (!device.online) return "offline";
-        if (sshProbeError.length > 0) return "unknown";
-        if (!device.sshKnown) return "unknown";
-        return device.sshAvailable ? "reachable" : "degraded";
+        return DeviceIdentity.deviceHealth(device, tailscaleError, tailscaleBackend, sshProbeError);
     }
 
     function deviceError(device): string {
@@ -315,7 +312,7 @@ Singleton {
                             const active = !!node.ExitNode;
                             exitNodes.push({
                                 id: hostId,
-                                name: node.HostName,
+                                name: DeviceIdentity.displayName(node),
                                 actionHost: actionHost,
                                 online: online,
                                 active: active
@@ -328,7 +325,7 @@ Singleton {
 
                         devices.push({
                             id: hostId,
-                            name: node.HostName,
+                            name: DeviceIdentity.displayName(node),
                             actionHost: actionHost,
                             online: online,
                             lastSeen: String(node.LastSeen ?? ""),
@@ -364,9 +361,11 @@ Singleton {
                         });
                     };
 
-                    addDevice(data.Self, true);
-                    for (const peer of Object.values(data.Peer ?? {}))
-                        addDevice(peer, false);
+                    // Identity is the Tailscale node ID (IP/DNS only as
+                    // fallbacks), not HostName. Self wins over duplicate peers.
+                    // A genuine "localhost" peer with a different ID is kept.
+                    for (const entry of DeviceIdentity.distinctNodes(data.Self, Object.values(data.Peer ?? {})))
+                        addDevice(entry.node, entry.isSelf);
                     const availableExitNodes = exitNodes
                         .filter(node => node.online || node.active)
                         .sort((a, b) => a.name.localeCompare(b.name));
@@ -377,6 +376,10 @@ Singleton {
                     if (activeExitNodeId.length > 0)
                         root.preferredExitNodeId = activeExitNodeId;
 
+                    // Normal online polling keeps the last valid SSH result.
+                    // Going offline invalidates it, so reconnecting starts
+                    // amber until a NEW port-22 probe completes.
+                    root.sshAvailability = DeviceIdentity.retainOnlineAvailability(root.sshAvailability, devices);
                     root.devices = devices;
                     root.hostOnline = byHost;
                     root.sshProbeTargets = devices
@@ -445,7 +448,10 @@ Singleton {
                     const available = JSON.parse(text);
                     if (!available || typeof available !== "object" || Array.isArray(available))
                         throw new Error("Expected a JSON object of host diagnostics");
-                    root.sshAvailability = Object.assign({}, root.sshAvailability, available);
+                    // A probe may finish after a Tailscale offline update:
+                    // never revive stale diagnostics for an offline device.
+                    const liveResults = DeviceIdentity.retainOnlineAvailability(available, root.devices);
+                    root.sshAvailability = Object.assign({}, root.sshAvailability, liveResults);
                     root.sshProbeError = "";
                     root.devices = root.devices.map(device => {
                         const result = root.sshAvailability[device.actionHost];

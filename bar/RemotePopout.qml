@@ -11,11 +11,20 @@ import qs.components
 import qs.components.controls
 import qs.services
 import dcqwqc.devices.services as RemoteDesktop
-import dcqwqc.devices.quest as Quest
 import qs.utils
 
 Item {
     id: root
+
+    property bool vpnConnected: false
+    property string vpnExitCountry: ""
+
+
+    // Single horizontal inset for every primary section in the Devices tab.
+    // Nested detail rows retain their left indent but have no extra right inset.
+    readonly property real horizontalInset: Tokens.padding.small
+    readonly property real leadingIconWidth: 28
+    readonly property real rowSpacing: Tokens.spacing.small
 
     implicitWidth: 304
     // Keep the bar popout within a small/rotated display; expanding several
@@ -24,6 +33,88 @@ Item {
     readonly property real maxPanelHeight: Math.max(220,
         Math.min(680, (Quickshell.screens.length > 0 ? Quickshell.screens[0].height : 900) - 96))
 
+    // Connect independent/unified mouse modes (scoped to paired desktops)
+    readonly property string mouseModeBin: Quickshell.env("HOME") + "/.local/bin/caelestia-connect-mouse-mode"
+    property string mouseMode: "unknown"
+    property var mouseDesktopAvailable: null
+    property bool mouseStatusChecked: false
+    // Keep the controls visible for an online paired computer, even when
+    // its desktop is temporarily unavailable; explain the disabled action.
+    readonly property bool mousePeerPresent: root.listedDevices.some(d =>
+        !d.isSelf && d.online && d.canRemoteDesktop
+        && !!root.transferTarget(d))
+    readonly property bool mouseControlsAvailable: mousePeerPresent
+    readonly property bool mouseConnectReady: mousePeerPresent && mouseDesktopAvailable === true
+    property string mouseFeedback: ""
+    property bool mousePending: mouseModeSet.running
+
+    function refreshMouseMode(): void {
+        if (mouseModePoll.running || mousePending)
+            return;
+        mouseModePoll.command = [mouseModeBin, "status"];
+        mouseModePoll.running = true;
+    }
+
+    function chooseMouseMode(mode: string): void {
+        if (mousePending)
+            return;
+        mouseFeedback = qsTr("Switching mouse mode…");
+        mouseModeSet.command = [mouseModeBin, "set", mode].concat(mode === "unified" ? ["--onsite"] : []);
+        mouseModeSet.running = true;
+    }
+
+    Process {
+        id: mouseModePoll
+        running: false
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const data = JSON.parse(text);
+                    root.mouseMode = data.mode;
+                    root.mouseDesktopAvailable = typeof data.desktop_available === "boolean" ? data.desktop_available : null;
+                    root.mouseStatusChecked = true;
+                } catch (e) { root.mouseMode = "unknown"; root.mouseDesktopAvailable = null; root.mouseStatusChecked = true; }
+            }
+        }
+    }
+
+    Process {
+        id: mouseModeSet
+        running: false
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const data = JSON.parse(text);
+                    root.mouseMode = data.mode;
+                    root.mouseFeedback = data.mode === "separate"
+                        ? qsTr("Independent mice enabled on both computers")
+                        : data.mode === "unified"
+                        ? qsTr("Unified mouse and keyboard enabled")
+                        : qsTr("Input state needs checking");
+                } catch (e) {}
+            }
+        }
+        stderr: StdioCollector {
+            onStreamFinished: {
+                if (text.trim().length > 0)
+                    root.mouseFeedback = text.trim();
+            }
+        }
+        onExited: code => {
+            if (code !== 0 && !root.mouseFeedback.startsWith("Mouse mode:"))
+                root.mouseFeedback = qsTr("Could not change mouse mode; check peer SSH connection.");
+            root.refreshMouseMode();
+        }
+    }
+
+    Timer {
+        interval: 7000
+        repeat: true
+        running: root.visible
+        triggeredOnStart: true
+        onTriggered: root.refreshMouseMode()
+    }
+    onVisibleChanged: if (visible) root.refreshMouseMode()
     property var exitMenuItems: []
     // Keep expanded peers stable across the five-second Tailscale poll, which
     // replaces the device objects (and may recreate Repeater delegates).
@@ -85,7 +176,7 @@ Item {
             return false;
         return !!device.isSelf
             || device.type === "server"
-            || device.type === "headset"
+            || (device.type === "headset" && root.questMirrorAvailable)
             || !!device.online
             || !!device.canRemoteDesktop
             || !!device.canWake
@@ -93,6 +184,11 @@ Item {
     }
 
     function deviceEnabled(device): bool {
+        // Tailscale discovery alone must not leave an offline headset in
+        // Devices. Show it when it is currently reachable over Tailscale or
+        // ADB (USB/wireless), irrespective of an old saved visibility flag.
+        if (device.type === "headset" && !device.online && !root.questMirrorAvailable)
+            return false;
         const cfg = root.deviceOverride(device);
         return cfg.enabled === undefined ? root.defaultDeviceEnabled(device) : !!cfg.enabled;
     }
@@ -126,6 +222,42 @@ Item {
     property bool phoneMirrorAvailable: false
     property bool phoneMirrorConfigured: false
     property string phoneMirrorHost: ""
+
+    // Drag and drop is restricted to the paired desktop. Never send a file
+    // automatically to an arbitrary Tailscale or SSH device.
+    readonly property string transferBin: Quickshell.env("HOME") + "/.local/bin/caelestia-connect-send-target"
+    property string transferFeedback: ""
+    property string transferHostId: ""
+
+    function transferTarget(device): string {
+        if (!device || device.isSelf) return "";
+        const values = [device.actionHost, device.name].map(x => root.normaliseHost(x).split(".")[0]);
+        return values.includes("mirai") ? "mirai" : values.includes("tachibana") ? "tachibana" : "";
+    }
+
+    function sendFilesToDevice(device, drop): void {
+        const target = transferTarget(device);
+        if (!target || !drop.hasUrls || drop.urls.length === 0) {
+            drop.accepted = false;
+            return;
+        }
+        const paths = [];
+        for (const item of drop.urls) {
+            const url = String(item);
+            if (!url.startsWith("file:///")) {
+                root.transferHostId = String(device.id);
+                root.transferFeedback = qsTr("Only local files can be dropped");
+                drop.accepted = false;
+                return;
+            }
+            paths.push(decodeURIComponent(url.substring(7)));
+        }
+        root.transferHostId = String(device.id);
+        root.transferFeedback = qsTr("Sending %1 file(s) to %2. A desktop notification confirms completion.")
+            .arg(paths.length).arg(target === "mirai" ? "Mirai" : "Tachibana");
+        Quickshell.execDetached([transferBin, target].concat(paths));
+        drop.accepted = true;
+    }
 
     function normaliseHost(value): string {
         let host = String(value ?? "").trim().toLowerCase();
@@ -213,7 +345,7 @@ Item {
 
     function rebuildExitMenu(): void {
         for (const item of exitMenuItems) {
-            if (item !== directExitItem)
+            if (item !== directExitItem && item !== vpnRouteMenuItem)
                 item.destroy();
         }
 
@@ -227,6 +359,7 @@ Item {
             if (item)
                 items.push(item);
         }
+        items.push(vpnRouteMenuItem);
         exitMenuItems = items;
         routeMenu.items = items;
         syncExitMenu();
@@ -247,6 +380,14 @@ Item {
         icon: "public"
     }
 
+    MenuItem {
+        id: vpnRouteMenuItem
+        property bool opensVpnPicker: true
+        property string nodeId: ""
+        text: qsTr("VPN countries…")
+        icon: "public"
+    }
+
     Component {
         id: exitNodeMenuItem
 
@@ -261,9 +402,19 @@ Item {
         required property string hint
         property bool accent: false
 
-        type: IconButton.Text
+        // Material Symbols Rounded in a circular, understated touch target.
+        // Keep control dimensions constant as active state changes.
+        type: accent ? IconButton.Tonal : IconButton.Text
         font: Tokens.font.icon.small
+        padding: Tokens.padding.extraSmall / 2
+        isRound: true
+        radiusMorph: false
         shapeMorph: false
+
+        // Most icons are outlined; an active action receives a soft tint.
+        inactiveColour: Qt.alpha(Colours.palette.m3primary, 0.12)
+        inactiveOnColour: accent ? Colours.palette.m3primary : Colours.palette.m3onSurfaceVariant
+        label.fill: accent ? 1 : 0
 
     }
 
@@ -282,7 +433,7 @@ Item {
         // including its MCP tunnel and connectivity dependencies.
         readonly property string health: isSelf
             ? RemoteDesktop.RemoteStatus.overallHealth
-            : isHeadset ? (root.questMirrorAvailable ? "reachable" : "offline")
+            : isHeadset ? (hostRow.online ? "reachable" : "offline")
             : RemoteDesktop.RemoteStatus.deviceHealth(device)
         readonly property string healthError: isSelf
             ? RemoteDesktop.RemoteStatus.overallError
@@ -294,20 +445,20 @@ Item {
         // No status words: the dot is the only at-a-glance health indicator.
 
         Layout.fillWidth: true
-        Layout.leftMargin: Tokens.padding.small
-        Layout.rightMargin: Tokens.padding.small
+        Layout.leftMargin: root.horizontalInset
+        Layout.rightMargin: root.horizontalInset
         Layout.topMargin: Tokens.padding.extraSmall
         Layout.bottomMargin: Tokens.padding.extraSmall
         spacing: Tokens.spacing.extraSmall
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: Tokens.spacing.small
+            spacing: root.rowSpacing
 
             Item {
                 id: deviceIconWrap
-                implicitWidth: 28
-                implicitHeight: 28
+                implicitWidth: root.leadingIconWidth
+                implicitHeight: root.leadingIconWidth
                 Layout.alignment: Qt.AlignVCenter
 
                 MaterialIcon {
@@ -350,15 +501,37 @@ Item {
                     id: deviceNameText
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    width: Math.min(implicitWidth, Math.max(0, parent.width - (hostRow.isSelf ? 0 : 19)))
+                    width: Math.min(implicitWidth, Math.max(0, parent.width - (hostRow.isSelf || hostRow.health === "reachable" ? 0 : 19)))
                     text: root.deviceName(hostRow.device)
                     elide: Text.ElideRight
                     font: Tokens.font.body.builders.small.weight(Font.Medium).build()
                 }
 
+                DropArea {
+                    id: nameDrop
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: Math.max(0, parent.width - 19)
+                    z: 5
+                    enabled: !hostRow.isSelf && !!root.transferTarget(hostRow.device)
+                    onEntered: drag => {
+                        if (!drag.hasUrls || drag.urls.length === 0)
+                            drag.accepted = false;
+                    }
+                    onDropped: drop => root.sendFilesToDevice(hostRow.device, drop)
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 5
+                        color: "transparent"
+                        border.width: nameDrop.containsDrag ? 1 : 0
+                        border.color: Colours.palette.m3outlineVariant
+                    }
+                }
+
                 Item {
                     id: detailsChevron
-                    visible: !hostRow.isSelf
+                    visible: !hostRow.isSelf && hostRow.health !== "reachable"
                     width: 19
                     height: 24
                     anchors.left: deviceNameText.right
@@ -378,8 +551,10 @@ Item {
                 }
             }
 
-            // Connect / Wake / Terminal stay on the main row and are never
-            // gated by the diagnostics chevron, just like the original UI.
+
+            // Actions stay compact and right-aligned, independent of diagnostics.
+            // The chevron opens an error, never a second action panel.
+            // Connect / Wake / Terminal stay on the main row.
             RowLayout {
                 Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
                 spacing: 0
@@ -388,8 +563,8 @@ Item {
                     visible: hostRow.isHeadset
                     disabled: !root.questMirrorAvailable && !root.questMirrorRunning
                     accent: root.questMirrorRunning
-                    icon: root.questMirrorRunning ? "link_off" : "link"
-                    hint: root.questMirrorRunning ? qsTr("Stop mirroring") : qsTr("Mirror headset")
+                    icon: root.questMirrorRunning ? "link_off" : "cast"
+                    hint: root.questMirrorRunning ? qsTr("Stop headset mirroring") : qsTr("Mirror headset")
                     onClicked: {
                         Quickshell.execDetached([root.questMirrorBin]);
                         root.questMirrorRunning = !root.questMirrorRunning;
@@ -402,42 +577,74 @@ Item {
                     hint: qsTr("Mirror phone")
                     onClicked: Quickshell.execDetached([root.phoneMirrorBin])
                 }
+                // Per-device shortcut for the unified mouse/keyboard mode.
+                // This must remain available for stopping sharing even if the
+                // peer compositor disconnects while the input mode is active.
                 ActionButton {
-                    visible: hostRow.device.canRemoteDesktop
-                    disabled: !hostRow.online || hostRow.shared
+                    visible: !hostRow.isSelf && !!root.transferTarget(hostRow.device)
+                        && (root.mouseControlsAvailable || root.mouseMode === "unified")
+                    disabled: root.mousePending ||
+                        (root.mouseMode !== "unified" && !root.mouseConnectReady)
+                    accent: root.mouseMode === "unified"
+                    icon: "swap_horiz"
+                    hint: root.mousePending ? qsTr("Switching mouse mode…")
+                        : root.mouseMode === "unified" ? qsTr("Stop sharing mouse & keyboard")
+                        : !root.mouseStatusChecked ? qsTr("Checking mouse sharing availability…")
+                        : !root.mouseConnectReady ? qsTr("Mouse sharing unavailable: peer desktop offline")
+                        : qsTr("Share mouse & keyboard")
+                    onClicked: root.chooseMouseMode(root.mouseMode === "unified" ? "separate" : "unified")
+                }
+                ActionButton {
+                    visible: hostRow.online && root.mouseConnectReady
+                        && hostRow.device.canRemoteDesktop && !!root.transferTarget(hostRow.device)
+                    disabled: hostRow.shared
                     accent: hostRow.viewing
-                    icon: hostRow.viewing ? "desktop_windows" : "link"
-                    hint: hostRow.viewing ? qsTr("Open remote desktop") : qsTr("Connect")
-                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "open"])
+                    icon: "desktop_windows"
+                    hint: qsTr("View remote desktop")
+                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin,
+                        root.transferTarget(hostRow.device) || hostRow.device.actionHost, "open"])
+                }
+                ActionButton {
+                    visible: hostRow.online && root.mouseConnectReady
+                        && !!root.transferTarget(hostRow.device)
+                    icon: "visibility"
+                    hint: qsTr("Preview one app (view only)")
+                    onClicked: Quickshell.execDetached([Quickshell.env("HOME")
+                        + "/.local/bin/caelestia-connect-window-preview-launch"])
                 }
                 ActionButton {
                     visible: hostRow.hasSession
                     icon: "link_off"
                     hint: qsTr("Disconnect")
-                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "leave"])
+                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin,
+                        hostRow.device.id, "leave"])
                 }
                 ActionButton {
-                    visible: hostRow.device.canWake
+                    visible: hostRow.device.canWake && !hostRow.online
                     icon: "bolt"
-                    hint: qsTr("Wake")
-                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "wake"])
+                    hint: qsTr("Wake computer")
+                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin,
+                        hostRow.device.id, "wake"])
                 }
                 ActionButton {
                     visible: hostRow.device.canSsh && !hostRow.isHeadset
-                    disabled: !hostRow.online || (hostRow.device.type !== "phone" && !hostRow.device.sshAvailable)
-                    icon: "terminal"
+                    disabled: !hostRow.online ||
+                        (hostRow.device.type !== "phone" && !hostRow.device.sshAvailable)
+                    icon: "code"
                     hint: qsTr("Open terminal")
                     onClicked: hostRow.device.type === "phone"
                         ? Quickshell.execDetached(["ghostty", "-e", "ssh", "nothing-phone"])
-                        : Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.actionHost, "ssh"])
+                        : Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin,
+                            hostRow.device.actionHost, "ssh"])
                 }
             }
         }
 
+
         StyledText {
             Layout.fillWidth: true
             Layout.leftMargin: Tokens.padding.large
-            Layout.rightMargin: Tokens.padding.extraSmall
+            Layout.rightMargin: 0
             visible: hostRow.health !== "reachable" && hostRow.expanded
             text: hostRow.isHeadset
                 ? qsTr("Not reachable over ADB · plug in USB once to enable wireless")
@@ -448,110 +655,841 @@ Item {
             font: Tokens.font.label.small
         }
 
-        // Remote peers can show their diagnosis on demand without moving any actions.
-        StyledText {
-            Layout.fillWidth: true
-            Layout.leftMargin: Tokens.padding.large
-            Layout.rightMargin: Tokens.padding.extraSmall
-            visible: !hostRow.isSelf && hostRow.expanded && hostRow.health === "reachable"
-            text: hostRow.isHeadset
-                ? (root.questMirrorTransport === "usb" ? qsTr("ADB over USB") : qsTr("ADB over network"))
-                : qsTr("Tailscale connected · SSH TCP/22 reachable")
-            color: Colours.palette.m3onSurfaceVariant
-            wrapMode: Text.Wrap
-            font: Tokens.font.label.small
-        }
 
-        // Which desktop of this computer the headset shows and controls.
-        Loader {
-            Layout.fillWidth: true
-            active: hostRow.isSelf && Quest.QuestSession.available
-            visible: active
-            sourceComponent: HeadsetDesktop {}
-        }
     }
 
-    // Shared: this desktop, as it is. Private: a separate desktop with its
-    // own windows, pointer and keyboard, started on demand.
-    component HeadsetDesktop: ColumnLayout {
-        id: choice
+    component VpnRoutePanel: ColumnLayout {
+        id: vpn
+        Layout.fillWidth: true
+        spacing: 4
 
-        readonly property var session: Quest.QuestSession
-        readonly property bool wantsPrivate: session.pendingAction === "select-private" || session.pendingAction === "start"
-        readonly property bool wantsShared: session.pendingAction === "select-shared"
+        readonly property string helper: Quickshell.env("HOME")
+            + "/.local/share/caelestia/plugins/remote-desktop/scripts/vpngate-route"
+        property bool expanded: false
+        property bool connected: false
+        property bool tailscaleExitActive: false
+        property bool browsing: false
+        property bool working: false
+        property bool showCountries: false
+        property bool quickPicker: false
+        property bool quickAutoConnect: false
+        property bool awaitingDirect: false
+        property bool routePending: false
+        property int routeTries: 0
+        property string pendingCountryCode: ""
+        property string pendingCountryName: ""
+        readonly property bool requiresDirect: !connected
+            && (RemoteDesktop.RemoteStatus.exitNodeActive || tailscaleExitActive)
+        property bool sortExpanded: false
+        property string sortMode: "recommended"
+        property var sortModes: [
+            { id: "recommended", label: qsTr("Recommended") },
+            { id: "fastest", label: qsTr("Fastest") },
+            { id: "latency", label: qsTr("Low latency") },
+            { id: "line", label: qsTr("Line speed") }
+        ]
+        property string probeSummary: ""
+        property string measuredSpeed: ""
+        property string countryCode: "JP"
+        property string countryName: "Japan"
+        property string selectedId: ""
+        property string serverIp: ""
+        property string errorText: ""
+        property string verifiedExit: ""
+        property string browseAction: ""
+        property string nextCountry: ""
+        property string actionName: ""
+        property var countries: []
+        property var servers: []
 
-        spacing: Tokens.spacing.extraSmall
+        onConnectedChanged: {
+            root.vpnConnected = connected;
+            root.vpnExitCountry = connected ? countryName : "";
+        }
+        onCountryNameChanged: if (connected) root.vpnExitCountry = countryName;
 
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Tokens.spacing.small
+        function sortLabel(mode) {
+            const option = sortModes.find(x => x.id === mode);
+            return option ? option.label : qsTr("Recommended");
+        }
 
-            Item {
-                implicitWidth: 28
-                implicitHeight: 28
-                Layout.alignment: Qt.AlignVCenter
+        function openQuickPicker() {
+            expanded = false;
+            quickPicker = true;
+            awaitingDirect = false;
+            errorText = "";
+            if (!countries.length && !browsing)
+                browse("countries", "");
+        }
 
-                MaterialIcon {
-                    anchors.centerIn: parent
-                    text: "head_mounted_device"
-                    fontStyle: Tokens.font.icon.small
-                    color: Colours.palette.m3onSurfaceVariant
-                }
+        function quickConnectCountry(code, name) {
+            if (working || browsing || routePending)
+                return;
+            quickPicker = true;
+            awaitingDirect = false;
+            errorText = "";
+            quickAutoConnect = true;
+            if (connected && code === countryCode) {
+                quickPicker = false;
+                quickAutoConnect = false;
+                return;
             }
-
-            ButtonRow {
-                Layout.fillWidth: true
-                spacing: Tokens.spacing.extraSmall / 2
-
-                IconTextButton {
-                    fillWidth: true
-                    isToggle: true
-                    type: IconTextButton.Tonal
-                    icon: "screen_share"
-                    text: qsTr("Shared")
-                    font: Tokens.font.label.medium
-                    verticalPadding: Tokens.padding.extraSmall
-                    checked: choice.wantsShared || (choice.session.sharedSelected && !choice.wantsPrivate)
-                    internalChecked: checked
-                    disabled: choice.session.busy
-                    onClicked: if (!choice.session.sharedSelected) choice.session.select("shared")
-                }
-
-                IconTextButton {
-                    fillWidth: true
-                    isToggle: true
-                    type: IconTextButton.Tonal
-                    icon: "lock_person"
-                    text: qsTr("Private")
-                    font: Tokens.font.label.medium
-                    verticalPadding: Tokens.padding.extraSmall
-                    checked: choice.wantsPrivate || (choice.session.privateSelected && !choice.wantsShared)
-                    internalChecked: checked
-                    disabled: choice.session.busy
-                    // Choosing Private starts it when needed.
-                    onClicked: if (!choice.session.privateSelected) choice.session.selectPrivate()
-                }
-            }
-
-            // A private desktop left running in the background can be closed
-            // here; it otherwise keeps its windows for next time.
-            ActionButton {
-                visible: choice.session.privateReady && choice.session.sharedSelected
-                disabled: choice.session.busy
-                icon: "power_settings_new"
-                hint: qsTr("Close the private desktop")
-                onClicked: choice.session.stop()
+            if (connected) {
+                pendingCountryCode = code;
+                pendingCountryName = name;
+                action("disconnect");
+            } else {
+                changeCountry(code, name);
             }
         }
 
-        StyledText {
+        function connectOrPrepare() {
+            if (working || browsing || routePending)
+                return;
+            if (connected) {
+                awaitingDirect = false;
+                action("disconnect");
+                return;
+            }
+            if (!selectedId) {
+                errorText = qsTr("Choose a country or server.");
+                return;
+            }
+            if (!requiresDirect) {
+                awaitingDirect = false;
+                action("connect");
+                return;
+            }
+            // Only an explicit click authorizes changing an active Tailscale exit.
+            routePending = true;
+            routeTries = 0;
+            awaitingDirect = true;
+            errorText = "";
+            if (RemoteDesktop.RemoteStatus.exitNodeActive)
+                RemoteDesktop.RemoteStatus.setExitNode("");
+            else
+                readStatus();
+        }
+
+        function readStatus() {
+            if (statusProcess.running || working)
+                return;
+            statusProcess.command = [helper, "status"];
+            statusProcess.running = true;
+        }
+
+        function browse(action, argument) {
+            if (browsing)
+                return;
+            browsing = true;
+            browseAction = action;
+            browserProcess.command = [helper, action].concat(argument ? [argument] : []);
+            browserProcess.running = true;
+        }
+
+        function changeCountry(code, name) {
+            if (browsing || working || connected)
+                return;
+            countryCode = code;
+            countryName = name;
+            showCountries = false;
+            sortExpanded = false;
+            probeSummary = "";
+            selectedId = "";
+            servers = [];
+            if (quickAutoConnect && sortMode !== "recommended")
+                browse("sort", "recommended");
+            else
+                browse("servers", code);
+        }
+
+        function action(name) {
+            if (working)
+                return;
+            if (name === "connect" && !selectedId) {
+                errorText = qsTr("Choose a server.");
+                return;
+            }
+            if (name === "connect" && tailscaleExitActive) {
+                errorText = qsTr("Set Route to Direct first.");
+                return;
+            }
+            working = true;
+            actionName = name;
+            errorText = "";
+            verifiedExit = "";
+            actionProcess.command = [helper, name]
+                .concat(name === "connect" ? [selectedId] : []);
+            actionProcess.running = true;
+        }
+
+        Process {
+            id: statusProcess
+            stdout: StdioCollector {
+                onStreamFinished: {
+                    try {
+                        const result = JSON.parse(text.trim());
+                        if (!result.ok)
+                            return;
+                        vpn.connected = !!result.connected;
+                        vpn.tailscaleExitActive = !!result.tailscaleExitActive;
+                        if (vpn.routePending && !vpn.tailscaleExitActive
+                            && !RemoteDesktop.RemoteStatus.exitNodeChanging
+                            && !RemoteDesktop.RemoteStatus.exitNodeActive) {
+                            vpn.routePending = false;
+                            vpn.awaitingDirect = false;
+                            Qt.callLater(() => vpn.action("connect"));
+                        }
+                        if (result.sort) vpn.sortMode = result.sort;
+                        vpn.serverIp = result.server || "";
+                        if (vpn.connected && result.serverId)
+                            vpn.selectedId = result.serverId;
+                        if (vpn.connected && result.country) {
+                            vpn.countryCode = result.country;
+                            vpn.countryName = result.location || result.country;
+                        }
+                    } catch (e) {}
+                }
+            }
+        }
+
+        Process {
+            id: browserProcess
+            stdout: StdioCollector {
+                onStreamFinished: {
+                    try {
+                        const result = JSON.parse(text.trim());
+                        if (!result.ok) {
+                            vpn.errorText = result.error || qsTr("Couldn't load VPN Gate.");
+                            return;
+                        }
+                        if (vpn.browseAction === "sort") {
+                            vpn.sortMode = result.sort || "recommended";
+                            vpn.nextCountry = vpn.countryCode;
+                        } else if (vpn.browseAction === "probe") {
+                            vpn.probeSummary = qsTr("%1/%2 reachable")
+                                .arg(result.responsive || 0).arg(result.checked || 0);
+                            vpn.nextCountry = vpn.countryCode;
+                        } else if (vpn.browseAction === "countries" || vpn.browseAction === "refresh") {
+                            vpn.countries = result.countries || [];
+                            if (!vpn.countries.some(c => c.code === vpn.countryCode) && vpn.countries.length) {
+                                vpn.countryCode = vpn.countries[0].code;
+                                vpn.countryName = vpn.countries[0].name;
+                            } else {
+                                const selected = vpn.countries.find(c => c.code === vpn.countryCode);
+                                if (selected) vpn.countryName = selected.name;
+                            }
+                            vpn.nextCountry = vpn.countryCode;
+                        } else if (vpn.browseAction === "servers") {
+                            vpn.servers = result.servers || [];
+                            if (!vpn.servers.some(s => s.id === vpn.selectedId))
+                                vpn.selectedId = vpn.servers.length ? vpn.servers[0].id : "";
+                            if (vpn.quickAutoConnect) {
+                                vpn.quickAutoConnect = false;
+                                if (!vpn.selectedId)
+                                    vpn.errorText = qsTr("No VPN servers found for this country.");
+                                else if (vpn.requiresDirect)
+                                    vpn.awaitingDirect = true;
+                                else
+                                    Qt.callLater(() => vpn.action("connect"));
+                            }
+                            if (vpn.connected) {
+                                const currentIndex = vpn.servers.findIndex(s => s.id === vpn.selectedId);
+                                if (currentIndex >= 0)
+                                    Qt.callLater(() => serverList.positionViewAtIndex(currentIndex, ListView.Center));
+                            }
+                        }
+                    } catch (e) {
+                        vpn.errorText = qsTr("Couldn't read server list.");
+                    }
+                }
+            }
+            onExited: code => {
+                vpn.browsing = false;
+                if (code !== 0) vpn.quickAutoConnect = false;
+                if (code !== 0 && !vpn.errorText)
+                    vpn.errorText = qsTr("Server directory unavailable. Try refresh.");
+                if (code === 0 && vpn.nextCountry) {
+                    const codeToLoad = vpn.nextCountry;
+                    vpn.nextCountry = "";
+                    Qt.callLater(() => vpn.browse("servers", codeToLoad));
+                }
+            }
+        }
+
+        Process {
+            id: actionProcess
+            stdout: StdioCollector {
+                onStreamFinished: {
+                    try {
+                        const result = JSON.parse(text.trim());
+                        if (!result.ok) {
+                            vpn.errorText = result.error || qsTr("VPN connection failed.");
+                            return;
+                        }
+                        if (vpn.actionName === "verify") {
+                            vpn.verifiedExit = qsTr("%1 · %2").arg(result.country || "?").arg(result.ip || "?");
+                        } else if (vpn.actionName === "benchmark") {
+                            vpn.measuredSpeed = Number(result.measuredMbps).toFixed(1) + " Mb/s";
+                            vpn.verifiedExit = qsTr("%1 · %2").arg(result.country || "?").arg(result.ip || "?");
+                        } else {
+                            vpn.connected = !!result.connected;
+                            vpn.serverIp = result.server || "";
+                        }
+                    } catch (e) {
+                        vpn.errorText = qsTr("VPN returned an invalid response.");
+                    }
+                }
+            }
+            onExited: code => {
+                vpn.working = false;
+                if (code === 0 && vpn.pendingCountryCode && !vpn.connected) {
+                    const country = vpn.pendingCountryCode;
+                    const name = vpn.pendingCountryName;
+                    vpn.pendingCountryCode = "";
+                    vpn.pendingCountryName = "";
+                    Qt.callLater(() => vpn.changeCountry(country, name));
+                } else if (code !== 0) {
+                    vpn.pendingCountryCode = "";
+                    vpn.pendingCountryName = "";
+                    vpn.quickAutoConnect = false;
+                }
+                if (code === 0 && vpn.actionName === "connect" && vpn.connected) {
+                    vpn.quickPicker = false;
+                    vpn.awaitingDirect = false;
+                }
+                if (code !== 0 && !vpn.errorText)
+                    vpn.errorText = qsTr("VPN action failed. Check NetworkManager or retry.");
+                if (code === 0 && vpn.actionName === "benchmark" && !vpn.browsing)
+                    Qt.callLater(() => vpn.browse("servers", vpn.countryCode));
+                statusTimer.restart();
+            }
+        }
+
+        Timer {
+            id: statusTimer
+            interval: 650
+            repeat: false
+            onTriggered: vpn.readStatus()
+        }
+        Timer {
+            interval: 15000
+            repeat: true
+            running: vpn.visible
+            onTriggered: vpn.readStatus()
+        }
+        Component.onCompleted: vpn.readStatus()
+        Timer {
+            interval: 550
+            repeat: true
+            running: vpn.routePending
+            onTriggered: {
+                vpn.routeTries++;
+                if (vpn.routeTries > 35 || RemoteDesktop.RemoteStatus.exitNodeError.length > 0) {
+                    vpn.routePending = false;
+                    vpn.errorText = RemoteDesktop.RemoteStatus.exitNodeError
+                        || qsTr("Could not switch to Direct. VPN was not connected.");
+                } else if (!RemoteDesktop.RemoteStatus.exitNodeChanging
+                    && !RemoteDesktop.RemoteStatus.exitNodeActive) {
+                    vpn.readStatus();
+                }
+            }
+        }
+        onExpandedChanged: {
+            if (expanded) {
+                quickPicker = false;
+                readStatus();
+                if (!countries.length)
+                    browse("countries", "");
+            } else {
+                showCountries = false;
+            }
+        }
+
+        Rectangle {
             Layout.fillWidth: true
-            Layout.leftMargin: 28 + Tokens.spacing.small
-            visible: !choice.session.busy && (choice.session.actionError.length > 0 || choice.session.statusError.length > 0)
-            text: choice.session.actionError.length > 0 ? choice.session.actionError : choice.session.statusError
-            color: Colours.palette.m3error
-            wrapMode: Text.Wrap
-            font: Tokens.font.label.small
+            implicitHeight: 34
+            radius: Tokens.rounding.medium
+            color: vpn.quickPicker || vpn.expanded
+                ? Colours.tPalette.m3surfaceContainerHighest : "transparent"
+            RowLayout {
+                anchors.fill: parent
+                spacing: root.rowSpacing
+                Item {
+                    implicitWidth: root.leadingIconWidth
+                    implicitHeight: root.leadingIconWidth
+                    MaterialIcon {
+                        anchors.centerIn: parent
+                        text: "public"
+                        fontStyle: Tokens.font.icon.small
+                        color: Colours.palette.m3onSurfaceVariant
+                    }
+                }
+                StyledText {
+                    Layout.fillWidth: true
+                    text: qsTr("VPN")
+                    font: Tokens.font.body.small
+                    color: Colours.palette.m3onSurface
+                }
+                Rectangle {
+                    width: 6; height: 6; radius: 3
+                    color: vpn.connected ? "#43a047" : Colours.palette.m3onSurfaceVariant
+                }
+                StyledText {
+                    text: vpn.connected ? vpn.countryName : qsTr("Off")
+                    font: Tokens.font.body.small
+                    color: Colours.palette.m3onSurfaceVariant
+                    elide: Text.ElideRight
+                    Layout.maximumWidth: 105
+                }
+                Item {
+                    implicitWidth: 28; implicitHeight: 28
+                    MaterialIcon {
+                        anchors.centerIn: parent
+                        text: vpn.expanded ? "expand_less" : "tune"
+                        fontStyle: Tokens.font.icon.small
+                        color: Colours.palette.m3onSurfaceVariant
+                    }
+                }
+            }
+            MouseArea {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: parent.width - 30
+                cursorShape: Qt.PointingHandCursor
+                onClicked: vpn.quickPicker ? vpn.quickPicker = false : vpn.openQuickPicker()
+            }
+            MouseArea {
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: 30
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    vpn.quickPicker = false;
+                    vpn.expanded = !vpn.expanded;
+                }
+            }
+        }
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 4
+            visible: vpn.quickPicker
+            StyledText {
+                Layout.fillWidth: true
+                visible: vpn.browsing && vpn.countries.length === 0
+                text: qsTr("Loading countries…")
+                font: Tokens.font.label.small
+                color: Colours.palette.m3onSurfaceVariant
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 30
+                radius: 7
+                visible: vpn.connected && !vpn.awaitingDirect
+                color: "transparent"
+                StyledText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: parent.left
+                    anchors.leftMargin: 8
+                    text: qsTr("Disconnect VPN")
+                    font: Tokens.font.body.small
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: vpn.connectOrPrepare()
+                }
+            }
+            ListView {
+                id: quickCountryList
+                Layout.fillWidth: true
+                Layout.preferredHeight: visible ? Math.min(5, vpn.countries.length) * 32 : 0
+                visible: !vpn.awaitingDirect && vpn.countries.length > 0
+                clip: true
+                interactive: vpn.countries.length > 5
+                boundsBehavior: Flickable.StopAtBounds
+                model: vpn.countries
+                delegate: Rectangle {
+                    id: quickCountryRow
+                    required property var modelData
+                    width: quickCountryList.width
+                    height: 32
+                    radius: 7
+                    color: quickCountryRow.modelData.code === vpn.countryCode
+                        ? Colours.tPalette.m3surfaceContainerHighest : "transparent"
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        StyledText {
+                            Layout.fillWidth: true
+                            text: quickCountryRow.modelData.name
+                            font: Tokens.font.body.small
+                            elide: Text.ElideRight
+                        }
+                        MaterialIcon {
+                            visible: quickCountryRow.modelData.code === vpn.countryCode
+                            text: "check"
+                            fontStyle: Tokens.font.icon.small
+                            color: Colours.palette.m3onSurfaceVariant
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !vpn.working && !vpn.browsing && !vpn.routePending
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: vpn.quickConnectCountry(quickCountryRow.modelData.code, quickCountryRow.modelData.name)
+                    }
+                }
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 36
+                radius: 9
+                visible: vpn.awaitingDirect && !vpn.connected
+                color: Colours.palette.m3onSurface
+                opacity: vpn.routePending ? 0.65 : 1
+                StyledText {
+                    anchors.centerIn: parent
+                    text: vpn.routePending ? qsTr("Switching route…") : qsTr("Switch to Direct & Connect")
+                    font: Tokens.font.body.small
+                    color: Colours.palette.m3surface
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: !vpn.routePending
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: vpn.connectOrPrepare()
+                }
+            }
+            StyledText {
+                Layout.fillWidth: true
+                visible: vpn.errorText.length > 0
+                text: vpn.errorText
+                wrapMode: Text.Wrap
+                font: Tokens.font.label.small
+                color: Colours.palette.m3error
+            }
+        }
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            // The parent VPN section already has the shared horizontal inset.
+            // No second inset here: country, servers and connect share edges.
+            Layout.bottomMargin: 3
+            spacing: 4
+            visible: vpn.expanded
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 5
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 32
+                    radius: 9
+                    color: Colours.tPalette.m3surfaceContainerHighest
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 9
+                        anchors.rightMargin: 7
+                        spacing: 5
+                        StyledText {
+                            Layout.fillWidth: true
+                            text: vpn.countries.length ? vpn.countryName
+                                : vpn.browsing ? qsTr("Loading countries…") : qsTr("Choose country")
+                            font: Tokens.font.body.small
+                            color: Colours.palette.m3onSurface
+                        }
+                        MaterialIcon {
+                            text: vpn.showCountries ? "expand_less" : "expand_more"
+                            fontStyle: Tokens.font.icon.small
+                            color: Colours.palette.m3onSurfaceVariant
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !vpn.connected && vpn.countries.length > 0
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: vpn.showCountries = !vpn.showCountries
+                    }
+                }
+                Rectangle {
+                    implicitWidth: 32
+                    implicitHeight: 32
+                    radius: 9
+                    color: Colours.tPalette.m3surfaceContainerHighest
+                    MaterialIcon {
+                        anchors.centerIn: parent
+                        text: "refresh"
+                        fontStyle: Tokens.font.icon.small
+                        color: Colours.palette.m3onSurfaceVariant
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !vpn.browsing
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            vpn.errorText = "";
+                            vpn.browse("refresh", "");
+                        }
+                    }
+                }
+            }
+
+            ListView {
+                id: countryList
+                Layout.fillWidth: true
+                Layout.preferredHeight: vpn.showCountries ? Math.min(5, vpn.countries.length) * 30 : 0
+                visible: vpn.showCountries
+                clip: true
+                interactive: vpn.countries.length > 5
+                boundsBehavior: Flickable.StopAtBounds
+                model: vpn.countries
+                delegate: Rectangle {
+                    id: countryRow
+                    required property var modelData
+                    width: countryList.width
+                    height: 30
+                    radius: 7
+                    color: countryRow.modelData.code === vpn.countryCode
+                        ? Colours.tPalette.m3surfaceContainerHighest : "transparent"
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 7
+                        anchors.rightMargin: 7
+                        spacing: 5
+                        StyledText {
+                            Layout.fillWidth: true
+                            text: countryRow.modelData.name
+                            font: Tokens.font.label.small
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        enabled: !vpn.browsing
+                        onClicked: vpn.changeCountry(countryRow.modelData.code, countryRow.modelData.name)
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 4
+                StyledText {
+                    text: qsTr("Servers")
+                    font: Tokens.font.label.small
+                    color: Colours.palette.m3onSurfaceVariant
+                }
+                Item { Layout.fillWidth: true }
+                ActionButton {
+                    icon: "network_check"
+                    disabled: vpn.browsing || vpn.connected
+                    hint: vpn.probeSummary
+                        ? qsTr("Local TCP check: %1 · Check again").arg(vpn.probeSummary)
+                        : qsTr("Check local TCP response (up to 12 relays, no VPN change)")
+                    onClicked: vpn.browse("probe", vpn.countryCode)
+                }
+                Rectangle {
+                    implicitWidth: Math.max(94, sortName.implicitWidth + 23)
+                    implicitHeight: 26
+                    radius: 8
+                    color: Colours.tPalette.m3surfaceContainerHighest
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 7
+                        anchors.rightMargin: 6
+                        spacing: 3
+                        StyledText {
+                            id: sortName
+                            text: vpn.sortLabel(vpn.sortMode)
+                            font: Tokens.font.label.small
+                            color: Colours.palette.m3onSurface
+                        }
+                        MaterialIcon {
+                            text: vpn.sortExpanded ? "expand_less" : "expand_more"
+                            fontStyle: Tokens.font.icon.small
+                            color: Colours.palette.m3onSurfaceVariant
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        enabled: !vpn.browsing
+                        onClicked: {
+                            vpn.showCountries = false;
+                            vpn.sortExpanded = !vpn.sortExpanded;
+                        }
+                    }
+                }
+            }
+
+            ListView {
+                id: sortList
+                Layout.fillWidth: true
+                Layout.preferredHeight: vpn.sortExpanded ? vpn.sortModes.length * 29 : 0
+                visible: vpn.sortExpanded
+                clip: true
+                interactive: false
+                model: vpn.sortModes
+                delegate: Rectangle {
+                    id: modeRow
+                    required property var modelData
+                    width: sortList.width
+                    height: 29
+                    radius: 7
+                    color: modeRow.modelData.id === vpn.sortMode
+                        ? Colours.tPalette.m3surfaceContainerHighest : "transparent"
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        StyledText {
+                            Layout.fillWidth: true
+                            text: modeRow.modelData.label
+                            font: Tokens.font.label.small
+                            color: Colours.palette.m3onSurface
+                        }
+                        MaterialIcon {
+                            visible: modeRow.modelData.id === vpn.sortMode
+                            text: "check"
+                            fontStyle: Tokens.font.icon.small
+                            color: Colours.palette.m3onSurfaceVariant
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !vpn.browsing
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            vpn.sortExpanded = false;
+                            vpn.browse("sort", modeRow.modelData.id);
+                        }
+                    }
+                }
+            }
+
+            ListView {
+                id: serverList
+                Layout.fillWidth: true
+                readonly property int rowHeight: 34
+                Layout.preferredHeight: Math.min(3, vpn.servers.length) * rowHeight
+                implicitHeight: Math.min(3, vpn.servers.length) * rowHeight
+                visible: vpn.servers.length > 0
+                clip: true
+                interactive: vpn.servers.length > 3
+                boundsBehavior: Flickable.StopAtBounds
+                flickableDirection: Flickable.VerticalFlick
+                model: vpn.servers
+                delegate: Rectangle {
+                    id: relayRow
+                    required property var modelData
+                    required property int index
+                    width: serverList.width
+                    height: serverList.rowHeight
+                    radius: 8
+                    readonly property bool selected: vpn.selectedId === relayRow.modelData.id
+                    color: relayRow.selected ? Colours.tPalette.m3surfaceContainerHighest : "transparent"
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 9
+                        anchors.rightMargin: 9
+                        spacing: 6
+                        MaterialIcon {
+                            text: relayRow.selected ? "radio_button_checked" : "radio_button_unchecked"
+                            fontStyle: Tokens.font.icon.small
+                            color: relayRow.selected ? "#43a047" : Colours.palette.m3onSurfaceVariant
+                        }
+                        StyledText {
+                            Layout.fillWidth: true
+                            text: qsTr("Server %1").arg(relayRow.index + 1)
+                            font: Tokens.font.label.small
+                        }
+                        StyledText {
+                            text: vpn.sortMode === "latency"
+                                ? relayRow.modelData.latencyMs !== null
+                                    ? relayRow.modelData.latencyMs + " ms · checked" : qsTr("No RTT test")
+                                : relayRow.modelData.measuredMbps !== null
+                                    ? relayRow.modelData.measuredMbps.toFixed(1) + " Mb/s · tested"
+                                : relayRow.modelData.mbps.toFixed(1) + " Mb/s · line"
+                            font: Tokens.font.label.small
+                            color: Colours.palette.m3onSurfaceVariant
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !vpn.connected && !vpn.working
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: vpn.selectedId = relayRow.modelData.id
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 5
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 34
+                    radius: 9
+                    color: vpn.connected ? Colours.tPalette.m3surfaceContainerHighest : Colours.palette.m3onSurface
+                    opacity: vpn.working || vpn.routePending || (!vpn.connected && !vpn.selectedId) ? 0.58 : 1
+                    RowLayout {
+                        anchors.centerIn: parent
+                        spacing: 6
+                        MaterialIcon {
+                            text: vpn.connected ? "power_settings_new" : "vpn_lock"
+                            fontStyle: Tokens.font.icon.small
+                            color: vpn.connected ? Colours.palette.m3onSurface : Colours.palette.m3surface
+                        }
+                        StyledText {
+                            text: vpn.working
+                                ? vpn.actionName === "verify" ? qsTr("Checking IP…")
+                                : vpn.actionName === "disconnect" ? qsTr("Disconnecting…") : qsTr("Connecting…")
+                                : vpn.connected ? qsTr("Disconnect · %1").arg(vpn.countryName)
+                                : vpn.requiresDirect ? qsTr("Switch to Direct & Connect")
+                                : !vpn.selectedId ? qsTr("Select a server")
+                                : qsTr("Connect · %1").arg(vpn.countryName)
+                            font: Tokens.font.label.small
+                            color: vpn.connected ? Colours.palette.m3onSurface : Colours.palette.m3surface
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !vpn.working && !vpn.routePending && (vpn.connected || !!vpn.selectedId)
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: vpn.connectOrPrepare()
+                    }
+                }
+                ActionButton {
+                    visible: vpn.connected
+                    icon: "travel_explore"
+                    hint: vpn.verifiedExit ? qsTr("Verified exit: %1").arg(vpn.verifiedExit)
+                        : qsTr("Verify exit IP")
+                    onClicked: vpn.action("verify")
+                }
+                ActionButton {
+                    visible: vpn.connected
+                    icon: "speed"
+                    disabled: vpn.working
+                    hint: vpn.measuredSpeed
+                        ? qsTr("Measured: %1 · Retest (2 MB)").arg(vpn.measuredSpeed)
+                        : qsTr("Measure VPN download speed (2 MB)")
+                    onClicked: vpn.action("benchmark")
+                }
+            }
+
+            StyledText {
+                Layout.fillWidth: true
+                visible: vpn.errorText.length > 0
+                text: vpn.errorText
+                color: Colours.palette.m3error
+                font: Tokens.font.label.small
+                wrapMode: Text.Wrap
+            }
         }
     }
 
@@ -571,8 +1509,8 @@ Item {
     RowLayout {
         Layout.fillWidth: true
         Layout.topMargin: Tokens.padding.extraSmall
-        Layout.leftMargin: Tokens.padding.extraSmall
-        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.leftMargin: root.horizontalInset
+        Layout.rightMargin: root.horizontalInset
         spacing: Tokens.spacing.extraSmall
 
         StyledText {
@@ -601,15 +1539,22 @@ Item {
 
     RowLayout {
         Layout.fillWidth: true
-        Layout.leftMargin: Tokens.padding.extraSmall
-        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.leftMargin: root.horizontalInset
+        Layout.rightMargin: root.horizontalInset
         Layout.topMargin: 0
-        spacing: Tokens.spacing.extraSmall
+        spacing: root.rowSpacing
+        implicitHeight: root.leadingIconWidth
 
-        MaterialIcon {
-            text: "cloud_sync"
-            fontStyle: Tokens.font.icon.small
-            color: Colours.palette.m3onSurfaceVariant
+        Item {
+            implicitWidth: root.leadingIconWidth
+            implicitHeight: root.leadingIconWidth
+            Layout.alignment: Qt.AlignVCenter
+            MaterialIcon {
+                anchors.centerIn: parent
+                text: "cloud_sync"
+                fontStyle: Tokens.font.icon.small
+                color: Colours.palette.m3onSurfaceVariant
+            }
         }
 
         StyledText {
@@ -637,16 +1582,23 @@ Item {
 
     RowLayout {
         Layout.fillWidth: true
-        Layout.leftMargin: Tokens.padding.extraSmall
-        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.leftMargin: root.horizontalInset
+        Layout.rightMargin: root.horizontalInset
         Layout.topMargin: 0
-        Layout.bottomMargin: Tokens.padding.extraSmall
-        spacing: Tokens.spacing.extraSmall
+        Layout.bottomMargin: 0
+        spacing: root.rowSpacing
+        implicitHeight: root.leadingIconWidth
 
-        MaterialIcon {
-            text: "route"
-            fontStyle: Tokens.font.icon.small
-            color: Colours.palette.m3onSurfaceVariant
+        Item {
+            implicitWidth: root.leadingIconWidth
+            implicitHeight: root.leadingIconWidth
+            Layout.alignment: Qt.AlignVCenter
+            MaterialIcon {
+                anchors.centerIn: parent
+                text: "route"
+                fontStyle: Tokens.font.icon.small
+                color: Colours.palette.m3onSurfaceVariant
+            }
         }
 
         StyledText {
@@ -669,7 +1621,8 @@ Item {
                 spacing: 2
 
                 StyledText {
-                    text: RemoteDesktop.RemoteStatus.exitNodeActive
+                    text: root.vpnConnected ? root.vpnExitCountry
+                        : RemoteDesktop.RemoteStatus.exitNodeActive
                         ? RemoteDesktop.RemoteStatus.exitNodeName
                         : qsTr("Direct")
                     color: Colours.palette.m3onSurfaceVariant
@@ -699,26 +1652,59 @@ Item {
                 // Use the popout root for the menu overlay instead.
                 parent: root
                 attachTo: routePicker
+                // The route picker is the last row; open the menu above it
+                // instead of past the bottom edge of the popout/screen.
+                attachSideY: Menu.Top
+                thisSideY: Menu.Bottom
                 items: root.exitMenuItems
                 active: null
                 onItemSelected: item => {
-                    RemoteDesktop.RemoteStatus.setExitNode(item.nodeId);
+                    if (item.opensVpnPicker) {
+                        Qt.callLater(() => vpnPanel.openQuickPicker());
+                    } else if (root.vpnConnected) {
+                        if (!item.nodeId)
+                            vpnPanel.action("disconnect");
+                        else {
+                            vpnPanel.expanded = true;
+                            vpnPanel.errorText = qsTr("Disconnect VPN before choosing a Tailscale exit node.");
+                        }
+                    } else {
+                        RemoteDesktop.RemoteStatus.setExitNode(item.nodeId);
+                    }
                     Qt.callLater(() => routeMenu.active = null);
                 }
             }
         }
     }
 
-    StyledText {
+    RowLayout {
         Layout.fillWidth: true
-        Layout.leftMargin: Tokens.padding.extraSmall + Tokens.padding.large
-        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.leftMargin: root.horizontalInset
+        Layout.rightMargin: root.horizontalInset
         Layout.bottomMargin: Tokens.padding.extraSmall
+        spacing: root.rowSpacing
         visible: RemoteDesktop.RemoteStatus.exitNodeError.length > 0
-        text: RemoteDesktop.RemoteStatus.exitNodeError
-        color: Colours.palette.m3error
-        wrapMode: Text.Wrap
-        font: Tokens.font.label.small
+
+        // An empty icon column makes validation errors begin under "Route".
+        Item {
+            implicitWidth: root.leadingIconWidth
+            implicitHeight: 1
+        }
+        StyledText {
+            Layout.fillWidth: true
+            text: RemoteDesktop.RemoteStatus.exitNodeError
+            color: Colours.palette.m3error
+            wrapMode: Text.Wrap
+            font: Tokens.font.label.small
+        }
+    }
+
+    // Independent Internet VPN: existing MCP/Tailscale controls are unchanged.
+    VpnRoutePanel {
+        id: vpnPanel
+        Layout.fillWidth: true
+        Layout.leftMargin: root.horizontalInset
+        Layout.rightMargin: root.horizontalInset
     }
 
         } // deviceContent

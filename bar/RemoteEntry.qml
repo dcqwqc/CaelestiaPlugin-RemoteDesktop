@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import Caelestia.Config
 import qs.components
 import qs.components.controls
@@ -15,6 +16,8 @@ Item {
     readonly property bool hovered: statusHover.hovered
 
     HoverHandler { id: statusHover }
+
+    // External file drags select a destination in the Devices popout.
 
     MaterialIcon {
         id: icon

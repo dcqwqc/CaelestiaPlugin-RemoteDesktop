@@ -50,15 +50,24 @@ class DevicePanelPolicyTests(unittest.TestCase):
 
     def test_action_buttons_always_in_compact_row(self):
         row = POP.split('component HostRow: ColumnLayout {', 1)[1]
-        main, details = row.split('// Remote peers can show their diagnosis', 1)
-        # They must occur before the expandable diagnostics instead of inside
-        # an expanded-only RowLayout, as they did in the previous revision.
-        controls = main.split('// Connect / Wake / Terminal stay on the main row', 1)[1]
-        controls = controls.split("// Remote peers can show their diagnosis", 1)[0]
-        for action in ('Mirror phone', 'Open remote desktop', 'Disconnect', 'Wake', 'Open terminal'):
+        # Actions appear on the same row as the name, before the inline error.
+        controls = row.split('// Connect / Wake / Terminal stay on the main row', 1)[1]
+        controls = controls.split('visible: hostRow.health !== "reachable" && hostRow.expanded', 1)[0]
+        self.assertIn('Layout.alignment: Qt.AlignVCenter | Qt.AlignRight', controls)
+        self.assertIn('RowLayout {', controls)
+        self.assertNotIn('ColumnLayout {', controls)
+        for action in ('Mirror phone', 'View remote desktop', 'Preview one app', 'Disconnect', 'Wake', 'Open terminal'):
             with self.subTest(action=action):
                 self.assertIn(action, controls)
         self.assertNotIn('visible: !hostRow.isSelf && hostRow.expanded', controls)
+        self.assertNotIn('Devices actions: labelled, expanded only', POP)
+
+    def test_only_errors_live_below_device_row(self):
+        self.assertIn('visible: hostRow.health !== "reachable" && hostRow.expanded', POP)
+        self.assertIn('hostRow.healthError', POP)
+        self.assertNotIn("Drop files on this device's name to send to", POP)
+        self.assertNotIn('Tailscale connected · SSH TCP/22 reachable', POP)
+        self.assertIn('onDropped: drop => root.sendFilesToDevice(hostRow.device, drop)', POP)
 
     def test_chevron_is_small_and_immediately_after_name(self):
         self.assertIn('anchors.left: deviceNameText.right', POP)
@@ -104,6 +113,12 @@ class DevicePanelPolicyTests(unittest.TestCase):
         # fallback parent (the route picker's RowLayout) causes Qt warnings and
         # undefined behavior. The popout root is a plain Item instead.
         self.assertIn('parent: root' + chr(10) + '                attachTo: routePicker', POP)
+        self.assertIn('attachSideY: Menu.Top', POP)
+        self.assertIn('thisSideY: Menu.Bottom', POP)
+
+    def test_refresh_reloads_tunnel_roles(self):
+        self.assertIn('if (!deviceTypesProc.running)', STATUS)
+        self.assertIn('root.deviceRoles = roles;' + chr(10) + '                // Initial Tailscale', STATUS)
 
     def test_no_oversized_device_tooltips_but_inline_errors_remain(self):
         self.assertNotIn('Tooltip {', POP)
@@ -116,21 +131,24 @@ class DevicePanelPolicyTests(unittest.TestCase):
         self.assertIn('String(device.name ?? "").trim().toLowerCase() === "localhost"', SETTINGS_UI)
         self.assertIn('cfg.enabled === undefined ? root.defaultEnabled(device) : !!cfg.enabled', SETTINGS_UI)
 
-    def test_headset_desktop_choice_only_on_local_device(self):
-        self.assertIn('active: hostRow.isSelf && Quest.QuestSession.available', POP)
-        self.assertIn('sourceComponent: HeadsetDesktop {}', POP)
-        # No A/B jargon or explanatory status lines; only errors are shown.
-        self.assertNotIn('Desktop B', POP)
-        self.assertNotIn('A Shared', POP)
-
-    def test_private_choice_starts_it_and_follows_cli(self):
-        # `select private` starts the private desktop when needed.
-        self.assertIn('choice.session.selectPrivate()', POP)
+    def test_no_stale_quest_desktop_controls_in_devices(self):
+        # qsw-session-mode availability is NOT proof of a connected headset.
+        # Its UI used to sit below Mirai permanently even when Quest was offline.
+        for stale in ('HeadsetDesktop', 'Hosted by', 'Quest desktop',
+                      'choice.session.selectPrivate()', 'dcqwqc.devices.quest as Quest'):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, POP)
+        # CLI/session capability is retained outside the Devices popout.
         self.assertIn('root.run("select-private", ["select", "private"]);', QUEST)
-        # Checked state follows the CLI answer (or the pending request).
-        self.assertIn('choice.session.privateSelected && !choice.wantsShared', POP)
         self.assertIn('readonly property bool privateSelected: available && mode === "private"', QUEST)
         self.assertIn('root.privateReady = data.private_ready === true;', QUEST)
+
+    def test_unreachable_headset_does_not_appear_in_devices(self):
+        self.assertIn('device.type === "headset" && !device.online && !root.questMirrorAvailable', POP)
+        self.assertIn('return false;', POP)
+        self.assertIn('device.type === "headset" && root.questMirrorAvailable', POP)
+        self.assertIn('isHeadset ? (hostRow.online ? "reachable" : "offline")', POP)
+        self.assertIn('onTriggered: if (!questMirrorProbe.running) questMirrorProbe.running = true', POP)
 
     def test_headset_row_mirrors_instead_of_ssh(self):
         self.assertIn('&& /quest/i.test(`${node.HostName} ${actionHost}`) ? "headset"', STATUS)
@@ -147,7 +165,7 @@ class DevicePanelPolicyTests(unittest.TestCase):
         self.assertIn('${Quickshell.env("HOME")}/.local/bin/qsw-session-mode', QUEST)
 
     def test_qml_syntax(self):
-        exe = shutil.which('qmlformat') or '/usr/lib/qt6/bin/qmlformat'
+        exe = '/usr/lib/qt6/bin/qmlformat' if Path('/usr/lib/qt6/bin/qmlformat').exists() else shutil.which('qmlformat')
         for rel in ('bar/RemotePopout.qml', 'bar/RemoteEntry.qml', 'services/RemoteStatus.qml', 'SettingsUi.qml',
                     'quest/QuestSession.qml'):
             with self.subTest(file=rel):

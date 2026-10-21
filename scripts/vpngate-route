@@ -1,0 +1,629 @@
+#!/usr/bin/env python3
+"""VPN Gate worldwide route manager for the Caelestia Devices plugin.
+
+User initiated only. Does NOT change Tailscale settings or auto-connect.
+Import via NetworkManager/OpenVPN; never execute directives from relay profiles.
+"""
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import math
+import socket
+import base64
+import csv
+import hashlib
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+
+URL = "https://www.vpngate.net/api/iphone/"
+STATE = Path.home() / ".local/state/caelestia-vpngate"
+CACHE = STATE / "servers.json"
+CURRENT = STATE / "current.json"
+QUALITY = STATE / "quality.json"
+PREFS = STATE / "preferences.json"
+PROFILE = STATE / "selected.ovpn"
+CONN = "Caelestia VPN Gate"
+LEGACY_CONN = "Caelestia VPN Gate Japan"
+MAX_AGE = 1800
+MEASUREMENT_TTL = 14 * 86400
+SORTS = ("recommended", "fastest", "latency", "line")
+
+
+class RouteError(Exception):
+    pass
+
+
+def run(args, timeout=25):
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RouteError(f"Cannot run {args[0]}: {exc}") from exc
+    if p.returncode:
+        raise RouteError((p.stderr or p.stdout or f"exit {p.returncode}").strip()[:350])
+    return p.stdout
+
+
+
+def nmcli(*args, timeout=30):
+    """Use normal desktop NetworkManager auth; ask Polkit if it was denied."""
+    cmd = ["nmcli", *args]
+    try:
+        return run(cmd, timeout=timeout)
+    except RouteError as exc:
+        denied = any(word in str(exc).lower() for word in
+                     ("insufficient privileges", "not authorized", "not authorised"))
+        if not denied or not (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")):
+            raise
+        return run(["pkexec", "/usr/bin/nmcli", *args], timeout=max(timeout, 60))
+
+
+def put_json(path, data):
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".new")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+def read_json(path, default):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def display_country(code, name):
+    clean = str(name or code).split(" (", 1)[0].strip()
+    return {"KR": "South Korea", "RU": "Russia", "VN": "Vietnam",
+            "US": "United States"}.get(code, clean or code)
+
+
+def filtered_rows(text):
+    lines = text.splitlines()
+    header = next((line[1:] for line in lines if line.startswith("#HostName,")), None)
+    if header is None:
+        raise RouteError("VPN Gate directory returned an invalid response.")
+    body = [line for line in lines if line and not line.startswith(("#", "*"))]
+    if not body:
+        raise RouteError("VPN Gate directory is empty.")
+    result = []
+    for row in csv.DictReader([header] + body):
+        country = str(row.get("CountryShort", "")).upper().strip()
+        if not re.fullmatch("[A-Z]{2}", country):
+            continue
+        try:
+            addr = str(ipaddress.IPv4Address(row["IP"]))
+            raw = row["OpenVPN_ConfigData_Base64"]
+            if not raw or len(raw) > 130000:
+                continue
+            name = re.sub(r"[^a-zA-Z0-9 .()'-]", "", row.get("CountryLong", ""))[:60].strip() or country
+            name = display_country(country, name)
+            score = max(0, int(row.get("Score", "0") or 0))
+            speed = max(0, int(row.get("Speed", "0") or 0))
+            ping = max(0, int(row.get("Ping", "0") or 0))
+            sid = hashlib.sha256(f"{addr}:{raw}".encode()).hexdigest()[:16]
+            result.append({
+                "id": sid, "ip": addr, "country": country, "countryName": name,
+                "host": row.get("HostName", "")[:100],
+                "score": score, "mbps": round(speed / 1000000, 1),
+                "ping": ping,
+                "sessions": max(0, int(row.get("NumVpnSessions", "0") or 0)),
+                "uptime": max(0, int(row.get("Uptime", "0") or 0)),
+                "config": raw
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+    result.sort(key=lambda item: (item["score"], item["mbps"]), reverse=True)
+    if not result:
+        raise RouteError("VPN Gate has no valid relays right now.")
+    return result[:500]
+
+
+def directory(force=False):
+    cached = read_json(CACHE, {})
+    rows = cached.get("servers", [])
+    if rows and not force:
+        return rows, time.time() - cached.get("time", 0) > MAX_AGE
+    try:
+        raw = run(["curl", "-fLsS", "--compressed", "--connect-timeout", "8",
+                   "--max-time", "38", "--max-filesize", "3500000", URL], timeout=43)
+        rows = filtered_rows(raw)
+        put_json(CACHE, {"time": time.time(), "servers": rows})
+        return rows, False
+    except (RouteError, ValueError) as exc:
+        if cached.get("servers"):
+            return cached["servers"], True
+        raise RouteError(f"Could not load VPN Gate servers: {exc}") from exc
+
+
+def country_options(rows):
+    grouped = {}
+    for row in rows:
+        country = row.get("country", "JP")  # compatible with old Japan-only caches
+        name = display_country(country, row.get("countryName", "Japan" if country == "JP" else country))
+        entry = grouped.setdefault(country, {"code": country, "name": name,
+                                             "count": 0})
+        entry["count"] += 1
+    return sorted(grouped.values(), key=lambda x: (x["name"].lower(), x["code"]))
+
+
+def relay_history():
+    data = read_json(QUALITY, {})
+    return data if isinstance(data, dict) else {}
+
+
+def read_preferences():
+    data = read_json(PREFS, {})
+    mode = data.get("sort", "recommended") if isinstance(data, dict) else "recommended"
+    return mode if mode in SORTS else "recommended"
+
+
+def choose_sort(mode):
+    if mode not in SORTS:
+        raise RouteError("Invalid sort mode.")
+    put_json(PREFS, {"sort": mode})
+    return {"sort": mode}
+
+
+def recent_number(item, key, stamp, now=None):
+    if not isinstance(item, dict):
+        return None
+    try:
+        at = float(item.get(stamp, 0))
+        value = float(item.get(key, 0))
+        age = (time.time() if now is None else now) - at
+        if value > 0 and math.isfinite(value) and 0 <= age <= MEASUREMENT_TTL:
+            return value
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def save_observation(ip, **fields):
+    ipaddress.IPv4Address(ip)
+    data = relay_history()
+    item = data.get(ip, {})
+    item = item if isinstance(item, dict) else {}
+    item.update(fields)
+    item["last_update"] = time.time()
+    data[ip] = item
+    now = time.time()
+    recent = {}
+    for key, record in data.items():
+        if not isinstance(record, dict):
+            continue
+        try:
+            if 0 <= now - float(record.get("last_update", 0)) < MEASUREMENT_TTL:
+                recent[key] = record
+        except (ValueError, TypeError):
+            continue
+    put_json(QUALITY, recent)
+
+
+def record_connection(row, success, duration_ms):
+    ip = str(row["ip"])
+    item = relay_history().get(ip, {})
+    item = item if isinstance(item, dict) else {}
+    attempts = min(1000, int(item.get("attempts", 0)) + 1)
+    successes = min(attempts, int(item.get("successes", 0)) + int(bool(success)))
+    failure_streak = 0 if success else min(10, int(item.get("failure_streak", 0)) + 1)
+    now = time.time()
+    save_observation(ip, attempts=attempts, successes=successes,
+                     failure_streak=failure_streak,
+                     last_success=now if success else item.get("last_success", 0),
+                     last_failure=now if not success else item.get("last_failure", 0),
+                     connect_ms=round(max(0, duration_ms)) if success else item.get("connect_ms", 0))
+
+
+def recommended_score(row, history):
+    # Provider bandwidth saturates at 250 Mbps to avoid extreme outliers
+    # dominating the choice. Server score is a secondary reliability proxy.
+    speed = max(0, float(row.get("mbps", 0) or 0))
+    line = min(1.0, math.log1p(speed) / math.log1p(250))
+    quality = min(1.0, math.log1p(max(0, int(row.get("score", 0) or 0))) / math.log1p(2000000))
+    uptime = min(1.0, math.log1p(max(0, int(row.get("uptime", 0) or 0))) / math.log1p(604800))
+    users = min(1.0, math.log1p(max(0, int(row.get("sessions", 0) or 0))) / math.log1p(100))
+    value = 34 * line + 34 * quality + 22 * uptime + 10 * users
+    item = history.get(str(row.get("ip", "")), {})
+    if not isinstance(item, dict):
+        return round(value, 3)
+    attempts = max(0, int(item.get("attempts", 0) or 0))
+    if attempts:
+        success_ratio = (max(0, int(item.get("successes", 0))) + 1) / (attempts + 2)
+        value += min(1.0, attempts / 5) * 48 * (success_ratio - 0.5)
+    if 0 < time.time() - float(item.get("last_failure", 0) or 0) < 86400:
+        value -= min(36, 9 * int(item.get("failure_streak", 0) or 0))
+    real_speed = recent_number(item, "measured_mbps", "measured_at")
+    if real_speed is not None:
+        value += 26 * (min(1.0, math.log1p(real_speed) / math.log1p(100)) - line)
+    rtt = recent_number(item, "latency_ms", "latency_at")
+    if rtt is not None:
+        value += max(-10, min(16, (300 - rtt) / 25))
+    return round(value, 3)
+
+
+def relay_options(rows, country, *, sort="recommended", history=None):
+    if not re.fullmatch("[A-Z]{2}", country):
+        raise RouteError("Select a valid country.")
+    if sort not in SORTS:
+        raise RouteError("Invalid sort mode.")
+    known = relay_history() if history is None else history
+    matches = [row for row in rows if row.get("country", "JP") == country]
+    def speed(row):
+        return recent_number(known.get(row["ip"], {}), "measured_mbps", "measured_at")
+    def rtt(row):
+        return recent_number(known.get(row["ip"], {}), "latency_ms", "latency_at")
+    def key(row):
+        if sort == "recommended":
+            return (-recommended_score(row, known), -int(row.get("score", 0)), row["ip"])
+        if sort == "fastest":
+            m = speed(row)
+            return (0 if m is not None else 1, -(m if m is not None else float(row["mbps"])), row["ip"])
+        if sort == "latency":
+            latency = rtt(row)
+            return (0 if latency is not None else 1,
+                    latency if latency is not None else -recommended_score(row, known), row["ip"])
+        return (-float(row.get("mbps", 0)), row["ip"])
+    matches.sort(key=key)
+    result = []
+    for row in matches:
+        m = speed(row)
+        latency = rtt(row)
+        result.append({
+            **{k: row[k] for k in ("id", "ip", "score", "mbps", "ping", "sessions")},
+            "measuredMbps": round(m, 1) if m is not None else None,
+            "latencyMs": round(latency) if latency is not None else None,
+            "tested": bool(known.get(row["ip"], {}).get("attempts")),
+        })
+    return result
+
+
+def safe_probe_endpoint(row):
+    profile = checked_profile(row["config"], row["ip"])
+    proto = next((line for line in profile.splitlines() if line.startswith("proto ")), "")
+    if not proto.endswith(("tcp", "tcp-client")):
+        return None
+    line = next((line for line in profile.splitlines() if line.startswith("remote ")), "")
+    if not line:
+        return None
+    parts = line.split()
+    return str(ipaddress.IPv4Address(parts[1])), int(parts[2])
+
+
+def probe_one(row):
+    endpoint = safe_probe_endpoint(row)
+    if endpoint is None:
+        return None
+    for trial in range(2):
+        start = time.monotonic()
+        try:
+            with socket.create_connection(endpoint, timeout=1.2):
+                value = (time.monotonic() - start) * 1000
+            return round(value, 1)
+        except OSError:
+            if trial == 1:
+                return None
+    return None
+
+
+def probe_country(country):
+    if not re.fullmatch("[A-Z]{2}", country):
+        raise RouteError("Select a valid country.")
+    if active():
+        raise RouteError("Disconnect VPN to probe relays from your direct connection.")
+    rows, _ = directory()
+    history = relay_history()
+    candidates = [r for r in rows if r.get("country") == country]
+    candidates.sort(key=lambda r: -recommended_score(r, history))
+    candidates = candidates[:12]
+    checked = responsive = 0
+    # Explicit click only. Small TCP handshakes, maximum six simultaneous.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(probe_one, row): row for row in candidates}
+        for task in concurrent.futures.as_completed(futures):
+            checked += 1
+            row = futures[task]
+            try:
+                ms = task.result()
+            except (OSError, RouteError, ValueError):
+                ms = None
+            if ms is not None:
+                save_observation(row["ip"], latency_ms=ms, latency_at=time.time())
+                responsive += 1
+    return {"checked": checked, "responsive": responsive}
+
+
+def benchmark():
+    if not active():
+        raise RouteError("Connect to a VPN server to test real throughput.")
+    current = read_json(CURRENT, {})
+    ip = str(ipaddress.IPv4Address(current["ip"]))
+    route = run(["ip", "-4", "route", "get", "1.1.1.1"], timeout=5).lower()
+    if not re.search(r"\bdev (?:tun[0-9a-z-]*|vpn[0-9a-z-]*)\b", route):
+        raise RouteError("Traffic is not routed over a VPN tunnel. Test cancelled.")
+    info = json.loads(run(["curl", "-4", "-fLsS", "--connect-timeout", "4",
+                           "--max-time", "9", "https://ipinfo.io/json"], timeout=12))
+    if info.get("country") != current.get("country"):
+        raise RouteError("VPN exit country could not be verified. Test cancelled.")
+    # Manual only, exactly 2 MB expected; 14s hard timeout and 2.05 MB cap.
+    payload = run(["curl", "-4", "-fLsS", "--connect-timeout", "4", "--max-time", "14",
+                   "--max-filesize", "2050000", "-o", "/dev/null",
+                   "-w", "%{speed_download} %{size_download}",
+                   "https://speed.cloudflare.com/__down?bytes=2000000"], timeout=18)
+    values = payload.strip().split()
+    if len(values) != 2 or not 1500000 <= float(values[1]) <= 2050000:
+        raise RouteError("Speed test returned insufficient data.")
+    mbps = round(float(values[0]) * 8 / 1000000, 1)
+    if not 0 < mbps < 20000:
+        raise RouteError("Invalid speed measurement.")
+    save_observation(ip, measured_mbps=mbps, measured_at=time.time())
+    return {"measuredMbps": mbps, "country": info.get("country"),
+            "ip": str(info.get("ip", ""))[:80]}
+
+
+def active_name():
+    try:
+        out = run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"])
+        for label in (CONN, LEGACY_CONN):
+            if f"{label}:vpn" in out.splitlines():
+                return label
+    except RouteError:
+        pass
+    return ""
+
+
+def active():
+    return bool(active_name())
+
+
+def installed():
+    try:
+        listing = run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"])
+        return any(f"{label}:vpn" in listing.splitlines() for label in (CONN, LEGACY_CONN))
+    except RouteError:
+        return False
+
+
+def status():
+    current = read_json(CURRENT, {})
+    cache = read_json(CACHE, {})
+    return {
+        "connected": active(),
+        "configured": installed(),
+        "tailscaleExitActive": tailscale_exit_active(),
+         "location": display_country(current.get("country", "JP"), current.get("countryName", "Japan" if current.get("country", "JP") == "JP" else "")),
+        "country": current.get("country", "JP"),
+        "server": current.get("ip", ""),
+        "serverId": current.get("id", ""),
+        "cachedServers": len(cache.get("servers", [])),
+        "sort": read_preferences()
+    }
+
+
+
+def checked_profile(raw, target_ip):
+    """Reduce untrusted OVPN to a strict, non-script-bearing client profile."""
+    try:
+        data = base64.b64decode(raw, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RouteError("Invalid relay OpenVPN data.") from exc
+    if len(data) > 100000:
+        raise RouteError("Relay profile exceeds safety limit.")
+    tags = {"ca", "cert", "key", "tls-auth", "tls-crypt"}
+    blocks = {}
+    current_tag = None
+    current_lines = []
+    proto = "udp"
+    port = None
+    remote_cert_tls = False
+    wants_auth = False
+    cipher = None
+    data_ciphers = None
+    auth = None
+    comp_lzo = False
+    for line in data.splitlines():
+        stripped = line.strip()
+        if current_tag:
+            if stripped == f"</{current_tag}>":
+                content = "\n".join(current_lines) + "\n"
+                if len(content) > 30000 or not re.search("-----BEGIN [A-Z ]+-----", content):
+                    raise RouteError(f"Invalid {current_tag} certificate block.")
+                blocks[current_tag] = content
+                current_tag = None
+                current_lines = []
+            elif stripped.startswith("</") or stripped.startswith("<"):
+                raise RouteError("Nested or unexpected inline block.")
+            else:
+                current_lines.append(line)
+            continue
+        if not stripped or stripped.startswith(("#", ";")):
+            continue
+        if stripped in [f"<{x}>" for x in tags]:
+            current_tag = stripped[1:-1]
+            continue
+        if stripped.startswith("<"):
+            raise RouteError("Unsupported inline profile directive.")
+        pieces = stripped.split()
+        key = pieces[0].lower()
+        val = pieces[1:]
+        if key == "remote":
+            if len(val) < 2 or str(ipaddress.IPv4Address(val[0])) != target_ip:
+                raise RouteError("Relay address does not match the server directory.")
+            if not val[1].isdigit() or not 1 <= int(val[1]) <= 65535:
+                raise RouteError("Invalid OpenVPN port.")
+            port = int(val[1])
+        elif key == "proto":
+            if val not in (["udp"], ["tcp"], ["tcp-client"]):
+                raise RouteError("Unsupported VPN protocol.")
+            proto = val[0]
+        elif key == "remote-cert-tls":
+            if val != ["server"]:
+                raise RouteError("Unexpected remote TLS mode.")
+            remote_cert_tls = True
+        elif key == "auth-user-pass":
+            wants_auth = True
+        elif key == "data-ciphers" and len(val) == 1 and re.fullmatch(r"[A-Za-z0-9:-]{3,180}", val[0]):
+            data_ciphers = val[0]
+        elif key == "cipher" and len(val) == 1 and re.fullmatch(r"[A-Za-z0-9-]{3,40}", val[0]):
+            cipher = val[0]
+        elif key == "auth" and len(val) == 1 and re.fullmatch(r"[A-Za-z0-9-]{3,40}", val[0]):
+            auth = val[0]
+        elif key == "comp-lzo" and (not val or val == ["yes"]):
+            comp_lzo = True
+        elif key in {
+            "client", "dev", "resolv-retry", "nobind", "persist-key", "persist-tun",
+            "verb", "tls-client", "remote-random", "explicit-exit-notify",
+            "auth-nocache", "connect-retry", "connect-retry-max", "reneg-sec",
+            "tun-mtu", "mssfix", "float", "auth-retry", "pull", "setenv", "key-direction"
+        }:
+            # Ignore upstream behavioral directives; emit only controlled client settings.
+            continue
+        else:
+            raise RouteError(f"Relay contains unsupported OpenVPN directive: {key}")
+    if current_tag or not port or "ca" not in blocks:
+        raise RouteError("Incomplete relay profile, missing CA, or invalid server address.")
+    output = [
+        "client", "dev tun", f"proto {proto}", f"remote {target_ip} {port}",
+        "nobind", "persist-key", "persist-tun", "verb 3",
+    ]
+    if remote_cert_tls:
+        output.append("remote-cert-tls server")
+    if wants_auth:
+        output.extend(["auth-user-pass", "auth-nocache"])
+    if cipher:
+        output.append(f"cipher {cipher}")
+    if data_ciphers:
+        output.append(f"data-ciphers {data_ciphers}")
+    if auth:
+        output.append(f"auth {auth}")
+    if comp_lzo:
+        output.append("comp-lzo")
+    for tag in ("ca", "cert", "key", "tls-auth", "tls-crypt"):
+        if tag in blocks:
+            output.extend([f"<{tag}>", blocks[tag].rstrip(), f"</{tag}>"])
+    return "\n".join(output) + "\n"
+
+
+def tailscale_exit_active():
+    try:
+        d = json.loads(run(["tailscale", "status", "--json"], timeout=6))
+        return bool(d.get("ExitNodeStatus"))
+    except (RouteError, ValueError):
+        return False
+
+
+def connect(server_id):
+    if active():
+        raise RouteError("Disconnect the current VPN before changing servers.")
+    if tailscale_exit_active():
+        raise RouteError("Set Route to Direct before connecting to VPN Gate.")
+    entries, _ = directory()
+    candidate = next((row for row in entries if row["id"] == server_id), None)
+    if not candidate:
+        raise RouteError("Server not found. Refresh the server list.")
+    data = checked_profile(candidate["config"], candidate["ip"])
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(PROFILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(data)
+    # Only remove existing inactive profiles; never touch other VPN connections.
+    for label in (CONN, LEGACY_CONN):
+        try:
+            out = run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"])
+            if f"{label}:vpn" in out.splitlines():
+                nmcli("connection", "delete", label, timeout=40)
+        except RouteError:
+            raise
+    output = nmcli("connection", "import", "type", "openvpn",
+                   "file", str(PROFILE), timeout=60)
+    match = re.search(r"Connection ['‘](.+?)['’] \(", output)
+    imported = match.group(1) if match else PROFILE.stem
+    nmcli("connection", "modify", imported,
+          "connection.id", CONN, "connection.autoconnect", "no",
+          "ipv4.never-default", "no", "ipv6.method", "disabled", timeout=50)
+    if "auth-user-pass" in data:
+        nmcli("connection", "modify", CONN,
+              "vpn.user-name", "vpn", "vpn.secrets", "password=vpn", timeout=50)
+    put_json(CURRENT, {
+        "id": server_id, "ip": candidate["ip"],
+        "country": candidate.get("country", "JP"),
+         "countryName": display_country(candidate.get("country", "JP"), candidate.get("countryName", "Japan")),
+        "time": time.time()
+    })
+    started = time.monotonic()
+    try:
+        nmcli("--wait", "35", "connection", "up", CONN, timeout=60)
+        connected = active()
+        record_connection(candidate, success=connected,
+                          duration_ms=(time.monotonic() - started) * 1000)
+    except RouteError:
+        record_connection(candidate, success=False,
+                          duration_ms=(time.monotonic() - started) * 1000)
+        raise
+    return {"connected": connected, "server": candidate["ip"],
+            "country": candidate.get("country", "JP"),
+            "countryName": candidate.get("countryName", "Japan")}
+
+
+def disconnect():
+    name = active_name()
+    if name:
+        nmcli("--wait", "20", "connection", "down", name, timeout=45)
+    return status()
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("action", choices=["status", "countries", "servers",
+                                       "refresh", "connect", "disconnect", "verify",
+                                       "sort", "probe", "benchmark"])
+    p.add_argument("arg", nargs="?")
+    args = p.parse_args()
+    if args.action == "status":
+        data = status()
+    elif args.action in ("countries", "servers", "refresh"):
+        rows, stale = directory(force=args.action == "refresh")
+        if args.action == "servers":
+            country = str(args.arg or "").upper()
+            data = {"servers": relay_options(rows, country, sort=read_preferences()),
+                    "country": country, "sort": read_preferences(), "stale": stale}
+        else:
+            data = {"countries": country_options(rows), "stale": stale}
+    elif args.action == "sort":
+        data = choose_sort(args.arg)
+    elif args.action == "probe":
+        data = probe_country(str(args.arg or "").upper())
+    elif args.action == "benchmark":
+        data = benchmark()
+    elif args.action == "connect":
+        if not args.arg or not re.fullmatch("[a-f0-9]{16}", args.arg):
+            raise RouteError("Choose an available VPN Gate server.")
+        data = connect(args.arg)
+    elif args.action == "disconnect":
+        data = disconnect()
+    else:
+        if not active():
+            raise RouteError("Connect a VPN before verifying its public IP.")
+        raw = run(["curl", "-fLsS", "--max-time", "10",
+                   "https://ipinfo.io/json"], timeout=13)
+        info = json.loads(raw)
+        data = {"ip": str(info.get("ip", ""))[:80],
+                "country": str(info.get("country", ""))[:2]}
+    print(json.dumps({"ok": True, **data}))
+
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (RouteError, ValueError, OSError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)[:400]}))
+        sys.exit(1)

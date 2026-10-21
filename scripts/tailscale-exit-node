@@ -24,16 +24,24 @@ trap 'rm -f "$err"' EXIT
 
 if /usr/bin/tailscale "${args[@]}" 2>"$err"; then
   exit 0
+else
+  code=$?
 fi
-code=$?
 
 # Tailscale deliberately requires root unless a local operator is configured.
 # Ask Polkit once, grant only this user the Tailscale operator role, then retry.
 if grep -qiE 'Access denied|checkprefs access denied' "$err"; then
-  if /usr/bin/pkexec /usr/bin/tailscale set --operator="$USER"; then
+  autherr="$(mktemp)"
+  trap 'rm -f "$err" "$autherr"' EXIT
+  if /usr/bin/pkexec /usr/bin/tailscale set --operator="$(id -un)" 2>"$autherr"; then
     exec /usr/bin/tailscale "${args[@]}"
   fi
-  echo "Tailscale control authorization was cancelled." >&2
+  if grep -qiE 'textual authentication agent|/dev/tty' "$autherr"; then
+    echo "Tailscale authorization needs an interactive graphical session. Restart Caelestia from the local Hyprland session and retry." >&2
+  else
+    echo "Tailscale control authorization was not completed:" >&2
+    cat "$autherr" >&2
+  fi
   exit 126
 fi
 

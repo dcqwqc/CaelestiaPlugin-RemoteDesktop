@@ -721,6 +721,11 @@ Item {
         font: Tokens.font.label.small
     }
 
+        ContinueHere {
+            Layout.fillWidth: true
+            Layout.bottomMargin: Tokens.padding.extraSmall
+        }
+
         } // deviceContent
     } // Flickable
 }

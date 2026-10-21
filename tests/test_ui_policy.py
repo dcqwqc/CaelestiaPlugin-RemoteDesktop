@@ -104,6 +104,12 @@ class DevicePanelPolicyTests(unittest.TestCase):
         # fallback parent (the route picker's RowLayout) causes Qt warnings and
         # undefined behavior. The popout root is a plain Item instead.
         self.assertIn('parent: root' + chr(10) + '                attachTo: routePicker', POP)
+        self.assertIn('attachSideY: Menu.Top', POP)
+        self.assertIn('thisSideY: Menu.Bottom', POP)
+
+    def test_refresh_reloads_tunnel_roles(self):
+        self.assertIn('if (!deviceTypesProc.running)', STATUS)
+        self.assertIn('root.deviceRoles = roles;' + chr(10) + '                // Initial Tailscale', STATUS)
 
     def test_no_oversized_device_tooltips_but_inline_errors_remain(self):
         self.assertNotIn('Tooltip {', POP)
@@ -118,7 +124,7 @@ class DevicePanelPolicyTests(unittest.TestCase):
 
     def test_headset_desktop_choice_only_on_local_device(self):
         self.assertIn('active: hostRow.isSelf && Quest.QuestSession.available', POP)
-        self.assertIn('sourceComponent: HeadsetDesktop {}', POP)
+        self.assertIn('sourceComponent: HeadsetDesktop { hostLabel: root.deviceName(hostRow.device) }', POP)
         # No A/B jargon or explanatory status lines; only errors are shown.
         self.assertNotIn('Desktop B', POP)
         self.assertNotIn('A Shared', POP)
@@ -147,7 +153,7 @@ class DevicePanelPolicyTests(unittest.TestCase):
         self.assertIn('${Quickshell.env("HOME")}/.local/bin/qsw-session-mode', QUEST)
 
     def test_qml_syntax(self):
-        exe = shutil.which('qmlformat') or '/usr/lib/qt6/bin/qmlformat'
+        exe = '/usr/lib/qt6/bin/qmlformat' if Path('/usr/lib/qt6/bin/qmlformat').exists() else shutil.which('qmlformat')
         for rel in ('bar/RemotePopout.qml', 'bar/RemoteEntry.qml', 'services/RemoteStatus.qml', 'SettingsUi.qml',
                     'quest/QuestSession.qml'):
             with self.subTest(file=rel):

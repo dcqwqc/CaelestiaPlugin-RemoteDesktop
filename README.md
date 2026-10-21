@@ -148,3 +148,28 @@ Do not reintroduce network-service restarts behind the refresh icon.
 ### Generic loopback peer cleanup
 
 A peer named localhost is hidden from the Devices list by default. This does not disconnect it from Tailscale. A per-device explicit enabled override can show it again. The current device always remains visible.
+
+
+## Devices bar: compact rounded controls (v0.1.2)
+
+The Devices popout places four peer-specific actions on the same row, using
+Caelestia's existing Material Symbols Rounded icon font and circular
+IconButton hit targets. From left to right on paired desktops:
+
+- swap_horiz: toggle unified mouse and keyboard across Mirai and Tachibana;
+  highlighted while unified mode is active.
+- desktop_windows: open the peer's remote desktop; highlighted when viewing.
+- visibility: preview a single remote window (view-only).
+- code: open the peer's SSH terminal.
+
+There is no duplicate global Share mouse & keyboard button. Existing
+per-device Wake, Phone/Quest and Disconnect actions remain. Active actions
+use a muted theme tint and rounded fill, inactive actions stay outlined.
+The button hint strings remain available to accessibility integrations,
+but pop-up tooltip overlays are intentionally disabled to keep the narrow
+Devices panel unobstructed.
+
+Run python3 -m unittest discover -s tests -p 'test_*.py' before release.
+For production installations with uncommitted local plugin customizations,
+the auto-updater intentionally skips Git updates; do not force-reset.
+Merge and validate local differences first, taking a rollback backup.

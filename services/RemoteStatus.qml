@@ -143,6 +143,10 @@ Singleton {
     // service from the refresh control: it may be the user's only remote path.
     // Polls run automatically as well, so this is just an immediate recheck.
     function refreshNow(): void {
+        // Reload roles on manual refresh; device-types.conf can change
+        // after shell startup (for example after a device migration).
+        if (!deviceTypesProc.running)
+            deviceTypesProc.running = true;
         root.refresh();
         root.diagnoseConnectivity();
         if (!tunnelStatusProc.running)
@@ -168,6 +172,12 @@ Singleton {
     function setExitNode(nodeId): void {
         if (exitNodeChanging)
             return;
+
+        // Selecting the current route is a no-op, not an authorization request.
+        if (nodeId === exitNodeId) {
+            exitNodeError = "";
+            return;
+        }
 
         let target = "";
         if (nodeId.length > 0) {
@@ -259,6 +269,9 @@ Singleton {
                 }
                 root.deviceTypes = types;
                 root.deviceRoles = roles;
+                // Initial Tailscale discovery can finish before roles load.
+                // Re-evaluate tunnel candidates as soon as the roles arrive.
+                root.refresh();
             }
         }
     }

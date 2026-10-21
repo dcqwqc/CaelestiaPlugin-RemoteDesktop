@@ -5,6 +5,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import Caelestia.Config
 import Caelestia.Plugins
+import dcqwqc.devices
 import qs.components
 import qs.components.controls
 import qs.modules.nexus.common
@@ -156,6 +157,14 @@ ColumnLayout {
 
     SectionHeader {
         first: true
+        text: qsTr("Caelestia Connect")
+    }
+
+    PluginConnectSettings {
+        Layout.fillWidth: true
+    }
+
+    SectionHeader {
         text: "Devices"
     }
 

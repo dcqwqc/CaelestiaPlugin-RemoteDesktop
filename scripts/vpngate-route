@@ -73,6 +73,12 @@ def read_json(path, default):
         return default
 
 
+def display_country(code, name):
+    clean = str(name or code).split(" (", 1)[0].strip()
+    return {"KR": "South Korea", "RU": "Russia", "VN": "Vietnam",
+            "US": "United States"}.get(code, clean or code)
+
+
 def filtered_rows(text):
     lines = text.splitlines()
     header = next((line[1:] for line in lines if line.startswith("#HostName,")), None)
@@ -92,6 +98,7 @@ def filtered_rows(text):
             if not raw or len(raw) > 130000:
                 continue
             name = re.sub(r"[^a-zA-Z0-9 .()'-]", "", row.get("CountryLong", ""))[:60].strip() or country
+            name = display_country(country, name)
             score = max(0, int(row.get("Score", "0") or 0))
             speed = max(0, int(row.get("Speed", "0") or 0))
             ping = max(0, int(row.get("Ping", "0") or 0))
@@ -133,7 +140,7 @@ def country_options(rows):
     grouped = {}
     for row in rows:
         country = row.get("country", "JP")  # compatible with old Japan-only caches
-        name = row.get("countryName", "Japan" if country == "JP" else country)
+        name = display_country(country, row.get("countryName", "Japan" if country == "JP" else country))
         entry = grouped.setdefault(country, {"code": country, "name": name,
                                              "count": 0})
         entry["count"] += 1
@@ -180,7 +187,7 @@ def status():
         "connected": active(),
         "configured": installed(),
         "tailscaleExitActive": tailscale_exit_active(),
-        "location": current.get("countryName", "Japan" if current.get("country", "JP") == "JP" else ""),
+         "location": display_country(current.get("country", "JP"), current.get("countryName", "Japan" if current.get("country", "JP") == "JP" else "")),
         "country": current.get("country", "JP"),
         "server": current.get("ip", ""),
         "cachedServers": len(cache.get("servers", []))
@@ -334,7 +341,7 @@ def connect(server_id):
     put_json(CURRENT, {
         "id": server_id, "ip": candidate["ip"],
         "country": candidate.get("country", "JP"),
-        "countryName": candidate.get("countryName", "Japan"),
+         "countryName": display_country(candidate.get("country", "JP"), candidate.get("countryName", "Japan")),
         "time": time.time()
     })
     nmcli("--wait", "35", "connection", "up", CONN, timeout=60)

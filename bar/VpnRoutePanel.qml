@@ -19,6 +19,7 @@ ColumnLayout {
         + "/.local/share/caelestia/plugins/remote-desktop/scripts/vpngate-route"
     property bool expanded: false
     property bool connected: false
+    property bool tailscaleExitActive: false
     property bool busy: false
     property bool stale: false
     property bool allServers: false
@@ -70,6 +71,7 @@ ColumnLayout {
                         vpn.feedback = vpn.stale ? qsTr("Showing cached relays; directory unavailable.") : "";
                     } else if (vpn.lastAction === "status") {
                         vpn.connected = !!result.connected;
+                        vpn.tailscaleExitActive = !!result.tailscaleExitActive;
                         vpn.serverIp = result.server || "";
                         if (vpn.connected)
                             vpn.feedback = "";
@@ -219,6 +221,14 @@ ColumnLayout {
                     onClicked: vpn.execute("refresh", "")
                 }
             }
+        }
+        StyledText {
+            Layout.fillWidth: true
+            visible: vpn.tailscaleExitActive && !vpn.connected
+            text: qsTr("Your current Route uses a Tailscale exit node. Select Route → Direct above before connecting. Tailscale itself stays connected.")
+            font: Tokens.font.label.small
+            color: "#b78720"
+            wrapMode: Text.Wrap
         }
         StyledText {
             Layout.fillWidth: true

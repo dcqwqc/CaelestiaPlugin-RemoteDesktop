@@ -148,6 +148,7 @@ def status():
     return {
         "connected": active(),
         "configured": installed(),
+        "tailscaleExitActive": tailscale_exit_active(),
         "location": "Japan",
         "provider": "VPN Gate",
         "server": current.get("ip", ""),

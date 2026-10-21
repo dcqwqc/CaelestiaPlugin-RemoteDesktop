@@ -22,6 +22,5 @@
     }
   ],
   "settings": "Settings.qml",
-  "settingsUi": "SettingsUi.qml",
-  "requires": ">=2.1.0"
+  "settingsUi": "SettingsUi.qml"
 }

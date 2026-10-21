@@ -14,3 +14,7 @@ Experimental target: https://github.com/caelestia-dots/shell/pull/1703 (unmerged
 4. Do not deploy until runtime validation succeeds.
 
 **State:** Native manifest version-gated; source functionality otherwise preserved; not yet runtime verified.
+
+## Production-safe merge profile
+
+The root `manifest.json` retains the deployed Caelestia fork entry points and has **no upstream-only minimum version requirement**. The experimental official API profile is in `manifest.native-dev.json`; it is not used by the current fork loader. Do not replace the root file with the development profile until the upstream host implements all required custom panels and placement hooks.

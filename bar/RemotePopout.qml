@@ -814,6 +814,16 @@ Item {
         property bool browsing: false
         property bool working: false
         property bool showCountries: false
+        property bool sortExpanded: false
+        property string sortMode: "recommended"
+        property var sortModes: [
+            { id: "recommended", label: qsTr("Recommended") },
+            { id: "fastest", label: qsTr("Fastest") },
+            { id: "latency", label: qsTr("Low latency") },
+            { id: "line", label: qsTr("Line speed") }
+        ]
+        property string probeSummary: ""
+        property string measuredSpeed: ""
         property string countryCode: "JP"
         property string countryName: "Japan"
         property string selectedId: ""
@@ -831,6 +841,11 @@ Item {
             root.vpnExitCountry = connected ? countryName : "";
         }
         onCountryNameChanged: if (connected) root.vpnExitCountry = countryName;
+
+        function sortLabel(mode) {
+            const option = sortModes.find(x => x.id === mode);
+            return option ? option.label : qsTr("Recommended");
+        }
 
         function readStatus() {
             if (statusProcess.running || working)
@@ -854,6 +869,8 @@ Item {
             countryCode = code;
             countryName = name;
             showCountries = false;
+            sortExpanded = false;
+            probeSummary = "";
             selectedId = "";
             servers = [];
             browse("servers", code);
@@ -889,6 +906,7 @@ Item {
                             return;
                         vpn.connected = !!result.connected;
                         vpn.tailscaleExitActive = !!result.tailscaleExitActive;
+                        if (result.sort) vpn.sortMode = result.sort;
                         vpn.serverIp = result.server || "";
                         if (vpn.connected && result.serverId)
                             vpn.selectedId = result.serverId;
@@ -911,7 +929,14 @@ Item {
                             vpn.errorText = result.error || qsTr("Couldn't load VPN Gate.");
                             return;
                         }
-                        if (vpn.browseAction === "countries" || vpn.browseAction === "refresh") {
+                        if (vpn.browseAction === "sort") {
+                            vpn.sortMode = result.sort || "recommended";
+                            vpn.nextCountry = vpn.countryCode;
+                        } else if (vpn.browseAction === "probe") {
+                            vpn.probeSummary = qsTr("%1/%2 reachable")
+                                .arg(result.responsive || 0).arg(result.checked || 0);
+                            vpn.nextCountry = vpn.countryCode;
+                        } else if (vpn.browseAction === "countries" || vpn.browseAction === "refresh") {
                             vpn.countries = result.countries || [];
                             if (!vpn.countries.some(c => c.code === vpn.countryCode) && vpn.countries.length) {
                                 vpn.countryCode = vpn.countries[0].code;
@@ -960,6 +985,9 @@ Item {
                         }
                         if (vpn.actionName === "verify") {
                             vpn.verifiedExit = qsTr("%1 · %2").arg(result.country || "?").arg(result.ip || "?");
+                        } else if (vpn.actionName === "benchmark") {
+                            vpn.measuredSpeed = Number(result.measuredMbps).toFixed(1) + " Mb/s";
+                            vpn.verifiedExit = qsTr("%1 · %2").arg(result.country || "?").arg(result.ip || "?");
                         } else {
                             vpn.connected = !!result.connected;
                             vpn.serverIp = result.server || "";
@@ -972,7 +1000,9 @@ Item {
             onExited: code => {
                 vpn.working = false;
                 if (code !== 0 && !vpn.errorText)
-                    vpn.errorText = qsTr("Connection failed. Retry or check NetworkManager.");
+                    vpn.errorText = qsTr("VPN action failed. Check NetworkManager or retry.");
+                if (code === 0 && vpn.actionName === "benchmark" && !vpn.browsing)
+                    Qt.callLater(() => vpn.browse("servers", vpn.countryCode));
                 statusTimer.restart();
             }
         }
@@ -1156,15 +1186,96 @@ Item {
                 Layout.fillWidth: true
                 spacing: 4
                 StyledText {
-                    Layout.fillWidth: true
-                    text: qsTr("Servers")
+                    text: qsTr("Servers · %1").arg(vpn.servers.length
+                        || vpn.countries.find(c => c.code === vpn.countryCode)?.count || 0)
                     font: Tokens.font.label.small
                     color: Colours.palette.m3onSurfaceVariant
                 }
-                StyledText {
-                    text: qsTr("%1 available").arg(vpn.servers.length || vpn.countries.find(c => c.code === vpn.countryCode)?.count || 0)
-                    font: Tokens.font.label.small
-                    color: Colours.palette.m3onSurfaceVariant
+                Item { Layout.fillWidth: true }
+                ActionButton {
+                    icon: "network_check"
+                    disabled: vpn.browsing || vpn.connected
+                    hint: vpn.probeSummary
+                        ? qsTr("Local TCP check: %1 · Check again").arg(vpn.probeSummary)
+                        : qsTr("Check local TCP response (up to 12 relays, no VPN change)")
+                    onClicked: vpn.browse("probe", vpn.countryCode)
+                }
+                Rectangle {
+                    implicitWidth: Math.max(94, sortName.implicitWidth + 23)
+                    implicitHeight: 26
+                    radius: 8
+                    color: Colours.tPalette.m3surfaceContainerHighest
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 7
+                        anchors.rightMargin: 6
+                        spacing: 3
+                        StyledText {
+                            id: sortName
+                            text: vpn.sortLabel(vpn.sortMode)
+                            font: Tokens.font.label.small
+                            color: Colours.palette.m3onSurface
+                        }
+                        MaterialIcon {
+                            text: vpn.sortExpanded ? "expand_less" : "expand_more"
+                            fontStyle: Tokens.font.icon.small
+                            color: Colours.palette.m3onSurfaceVariant
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        enabled: !vpn.browsing
+                        onClicked: {
+                            vpn.showCountries = false;
+                            vpn.sortExpanded = !vpn.sortExpanded;
+                        }
+                    }
+                }
+            }
+
+            ListView {
+                id: sortList
+                Layout.fillWidth: true
+                Layout.preferredHeight: vpn.sortExpanded ? vpn.sortModes.length * 29 : 0
+                visible: vpn.sortExpanded
+                clip: true
+                interactive: false
+                model: vpn.sortModes
+                delegate: Rectangle {
+                    id: modeRow
+                    required property var modelData
+                    width: sortList.width
+                    height: 29
+                    radius: 7
+                    color: modeRow.modelData.id === vpn.sortMode
+                        ? Colours.tPalette.m3surfaceContainerHighest : "transparent"
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        StyledText {
+                            Layout.fillWidth: true
+                            text: modeRow.modelData.label
+                            font: Tokens.font.label.small
+                            color: Colours.palette.m3onSurface
+                        }
+                        MaterialIcon {
+                            visible: modeRow.modelData.id === vpn.sortMode
+                            text: "check"
+                            fontStyle: Tokens.font.icon.small
+                            color: Colours.palette.m3onSurfaceVariant
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !vpn.browsing
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            vpn.sortExpanded = false;
+                            vpn.browse("sort", modeRow.modelData.id);
+                        }
+                    }
                 }
             }
 
@@ -1205,7 +1316,12 @@ Item {
                             font: Tokens.font.label.small
                         }
                         StyledText {
-                            text: relayRow.modelData.mbps.toFixed(1) + " Mb/s"
+                            text: vpn.sortMode === "latency"
+                                ? relayRow.modelData.latencyMs !== null
+                                    ? relayRow.modelData.latencyMs + " ms · checked" : qsTr("No RTT test")
+                                : relayRow.modelData.measuredMbps !== null
+                                    ? relayRow.modelData.measuredMbps.toFixed(1) + " Mb/s · tested"
+                                : relayRow.modelData.mbps.toFixed(1) + " Mb/s · line"
                             font: Tokens.font.label.small
                             color: Colours.palette.m3onSurfaceVariant
                         }
@@ -1261,6 +1377,15 @@ Item {
                     hint: vpn.verifiedExit ? qsTr("Verified exit: %1").arg(vpn.verifiedExit)
                         : qsTr("Verify exit IP")
                     onClicked: vpn.action("verify")
+                }
+                ActionButton {
+                    visible: vpn.connected
+                    icon: "speed"
+                    disabled: vpn.working
+                    hint: vpn.measuredSpeed
+                        ? qsTr("Measured: %1 · Retest (2 MB)").arg(vpn.measuredSpeed)
+                        : qsTr("Measure VPN download speed (2 MB)")
+                    onClicked: vpn.action("benchmark")
                 }
             }
 

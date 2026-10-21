@@ -72,7 +72,7 @@ class VpnGateTests(unittest.TestCase):
              "mbps": float(n), "ping": 20, "sessions": 0}
             for n in range(25)
         ]
-        visible = script.relay_options(servers, "JP")
+        visible = script.relay_options(servers, "JP", sort="line", history={})
         self.assertEqual(len(visible), 25)
         self.assertEqual([s["mbps"] for s in visible],
                          sorted([s["mbps"] for s in servers], reverse=True))

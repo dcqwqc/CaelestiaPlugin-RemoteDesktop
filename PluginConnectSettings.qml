@@ -14,8 +14,7 @@ ColumnLayout {
     id: root
     Layout.fillWidth: true
     spacing: Tokens.spacing.medium
-    // Custom settings are loaded only when the Devices plugin's Settings
-    // section is expanded, so the background status poll is scoped to it.
+    // Loaded only while plugin settings are expanded.
 
     readonly property string backend: Quickshell.env("HOME") + "/.local/bin/caelestia-connect"
     property var snapshot: ({})
@@ -166,7 +165,7 @@ ColumnLayout {
                     font: Tokens.font.title.small
                 }
                 IconButton {
-                    visible: root.connection.local_daemon_running
+                    visible: !!root.connection.local_daemon_running
                     icon: "keyboard_return"
                     type: IconButton.Text
                     disabled: root.busy
@@ -291,7 +290,7 @@ ColumnLayout {
                         }
                         MouseArea {
                             anchors.fill: parent
-                            enabled: !root.busy && root.snapshot.peer_online
+                            enabled: !root.busy && !!root.snapshot.peer_online
                             cursorShape: Qt.OpenHandCursor
                             drag.target: miraiScreen
                             drag.minimumX: 0
@@ -416,7 +415,7 @@ ColumnLayout {
         }
         DropArea {
             anchors.fill: parent
-            enabled: !root.busy && root.snapshot.peer_online
+            enabled: !root.busy && !!root.snapshot.peer_online
             onDropped: drop => {
                 if (!drop.hasUrls || drop.urls.length !== 1) {
                     root.feedback = qsTr("Drop one local file");

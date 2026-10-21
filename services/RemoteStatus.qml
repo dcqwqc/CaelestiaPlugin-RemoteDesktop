@@ -173,12 +173,6 @@ Singleton {
         if (exitNodeChanging)
             return;
 
-        // Selecting the current route is a no-op, not an authorization request.
-        if (nodeId === exitNodeId) {
-            exitNodeError = "";
-            return;
-        }
-
         let target = "";
         if (nodeId.length > 0) {
             const node = exitNodes.find(candidate => candidate.id === nodeId);

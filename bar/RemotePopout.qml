@@ -11,7 +11,6 @@ import qs.components
 import qs.components.controls
 import qs.services
 import dcqwqc.devices.services as RemoteDesktop
-import dcqwqc.devices.quest as Quest
 import qs.utils
 
 Item {
@@ -29,9 +28,8 @@ Item {
     property string mouseMode: "unknown"
     property var mouseDesktopAvailable: null
     property bool mouseStatusChecked: false
-    // Keep mode information visible for a configured online pair even when
-    // the peer session has stopped. Only the actual Connect action needs a
-    // verified compositor. This avoids silently hiding the entire control.
+    // Keep the controls visible for an online paired computer, even when
+    // its desktop is temporarily unavailable; explain the disabled action.
     readonly property bool mousePeerPresent: root.listedDevices.some(d =>
         !d.isSelf && d.online && d.canRemoteDesktop
         && !!root.transferTarget(d))
@@ -168,7 +166,7 @@ Item {
             return false;
         return !!device.isSelf
             || device.type === "server"
-            || device.type === "headset"
+            || (device.type === "headset" && root.questMirrorAvailable)
             || !!device.online
             || !!device.canRemoteDesktop
             || !!device.canWake
@@ -176,6 +174,11 @@ Item {
     }
 
     function deviceEnabled(device): bool {
+        // Tailscale discovery alone must not leave an offline headset in
+        // Devices. Show it when it is currently reachable over Tailscale or
+        // ADB (USB/wireless), irrespective of an old saved visibility flag.
+        if (device.type === "headset" && !device.online && !root.questMirrorAvailable)
+            return false;
         const cfg = root.deviceOverride(device);
         return cfg.enabled === undefined ? root.defaultDeviceEnabled(device) : !!cfg.enabled;
     }
@@ -411,7 +414,7 @@ Item {
         // including its MCP tunnel and connectivity dependencies.
         readonly property string health: isSelf
             ? RemoteDesktop.RemoteStatus.overallHealth
-            : isHeadset ? (root.questMirrorAvailable ? "reachable" : "offline")
+            : isHeadset ? (hostRow.online ? "reachable" : "offline")
             : RemoteDesktop.RemoteStatus.deviceHealth(device)
         readonly property string healthError: isSelf
             ? RemoteDesktop.RemoteStatus.overallError
@@ -479,7 +482,7 @@ Item {
                     id: deviceNameText
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    width: Math.min(implicitWidth, Math.max(0, parent.width - (hostRow.isSelf ? 0 : 19)))
+                    width: Math.min(implicitWidth, Math.max(0, parent.width - (hostRow.isSelf || hostRow.health === "reachable" ? 0 : 19)))
                     text: root.deviceName(hostRow.device)
                     elide: Text.ElideRight
                     font: Tokens.font.body.builders.small.weight(Font.Medium).build()
@@ -509,7 +512,7 @@ Item {
 
                 Item {
                     id: detailsChevron
-                    visible: !hostRow.isSelf
+                    visible: !hostRow.isSelf && hostRow.health !== "reachable"
                     width: 19
                     height: 24
                     anchors.left: deviceNameText.right
@@ -530,7 +533,8 @@ Item {
             }
 
 
-            // Compact, right-aligned per-device actions; details expand independently.
+            // Actions stay compact and right-aligned, independent of diagnostics.
+            // The chevron opens an error, never a second action panel.
             // Connect / Wake / Terminal stay on the main row.
             RowLayout {
                 Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
@@ -550,7 +554,7 @@ Item {
                 ActionButton {
                     visible: root.phoneMirrorMatches(hostRow.device)
                     disabled: !hostRow.online
-                    icon: "smartphone"
+                    icon: "link"
                     hint: qsTr("Mirror phone")
                     onClicked: Quickshell.execDetached([root.phoneMirrorBin])
                 }
@@ -577,7 +581,7 @@ Item {
                     disabled: hostRow.shared
                     accent: hostRow.viewing
                     icon: "desktop_windows"
-                    hint: qsTr("Open remote desktop")
+                    hint: qsTr("View remote desktop")
                     onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin,
                         root.transferTarget(hostRow.device) || hostRow.device.actionHost, "open"])
                 }
@@ -592,7 +596,7 @@ Item {
                 ActionButton {
                     visible: hostRow.hasSession
                     icon: "link_off"
-                    hint: qsTr("Disconnect remote session")
+                    hint: qsTr("Disconnect")
                     onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin,
                         hostRow.device.id, "leave"])
                 }
@@ -617,6 +621,7 @@ Item {
             }
         }
 
+
         StyledText {
             Layout.fillWidth: true
             Layout.leftMargin: Tokens.padding.large
@@ -631,165 +636,7 @@ Item {
             font: Tokens.font.label.small
         }
 
-        StyledText {
-            Layout.fillWidth: true
-            Layout.leftMargin: Tokens.padding.large
-            Layout.rightMargin: Tokens.padding.small
-            visible: hostRow.expanded && !hostRow.isSelf && !!root.transferTarget(hostRow.device)
-            text: qsTr("Drop files on this device's name to send to ~/Received Files")
-            color: Colours.palette.m3onSurfaceVariant
-            font: Tokens.font.label.small
-            wrapMode: Text.WordWrap
-        }
 
-        StyledText {
-            Layout.fillWidth: true
-            Layout.leftMargin: Tokens.padding.large
-            Layout.rightMargin: Tokens.padding.small
-            visible: root.transferHostId === String(hostRow.device.id) && root.transferFeedback.length > 0
-            text: root.transferFeedback
-            color: Colours.palette.m3primary
-            font: Tokens.font.label.small
-            wrapMode: Text.WordWrap
-        }
-
-        // Remote peers can show their diagnosis on demand without moving any actions.
-        StyledText {
-            Layout.fillWidth: true
-            Layout.leftMargin: Tokens.padding.large
-            Layout.rightMargin: Tokens.padding.extraSmall
-            visible: !hostRow.isSelf && hostRow.expanded && hostRow.health === "reachable"
-            text: hostRow.isHeadset
-                ? (root.questMirrorTransport === "usb" ? qsTr("ADB over USB") : qsTr("ADB over network"))
-                : qsTr("Tailscale connected · SSH TCP/22 reachable")
-            color: Colours.palette.m3onSurfaceVariant
-            wrapMode: Text.Wrap
-            font: Tokens.font.label.small
-        }
-
-        // Which desktop of this computer the headset shows and controls.
-        Loader {
-            // This is a control for the local host's desktop, not another
-            // device row. Indent it beneath the computer name and label the
-            // host explicitly so it cannot be confused with the Quest peer.
-            Layout.fillWidth: true
-            Layout.leftMargin: 36
-            Layout.rightMargin: Tokens.padding.extraSmall
-            active: hostRow.isSelf && Quest.QuestSession.available
-            visible: active
-            sourceComponent: HeadsetDesktop { hostLabel: root.deviceName(hostRow.device) }
-        }
-    }
-
-    // Shared: the local computer's desktop. Private: a separate desktop with
-    // its own windows, pointer and keyboard, started on demand. This is a
-    // nested host setting, deliberately distinct from the Quest device row.
-    component HeadsetDesktop: ColumnLayout {
-        id: choice
-
-        property string hostLabel: qsTr("this computer")
-        readonly property var session: Quest.QuestSession
-        readonly property bool wantsPrivate: session.pendingAction === "select-private" || session.pendingAction === "start"
-        readonly property bool wantsShared: session.pendingAction === "select-shared"
-
-        spacing: Tokens.spacing.extraSmall
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Tokens.spacing.extraSmall
-
-            Item {
-                implicitWidth: 20
-                implicitHeight: 20
-                Layout.alignment: Qt.AlignVCenter
-
-                MaterialIcon {
-                    anchors.centerIn: parent
-                    text: "desktop_windows"
-                    fontStyle: Tokens.font.icon.small
-                    color: Colours.palette.m3secondary
-                }
-            }
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 0
-
-                StyledText {
-                    Layout.fillWidth: true
-                    text: qsTr("Quest desktop")
-                    color: Colours.palette.m3onSurface
-                    font: Tokens.font.label.medium
-                }
-
-                StyledText {
-                    Layout.fillWidth: true
-                    text: qsTr("Hosted by %1").arg(choice.hostLabel)
-                    color: Colours.palette.m3onSurfaceVariant
-                    font: Tokens.font.label.small
-                }
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.leftMargin: 20 + Tokens.spacing.extraSmall
-            spacing: Tokens.spacing.extraSmall
-
-            ButtonRow {
-                Layout.fillWidth: true
-                spacing: Tokens.spacing.extraSmall / 2
-
-                IconTextButton {
-                    fillWidth: true
-                    isToggle: true
-                    type: IconTextButton.Tonal
-                    icon: "screen_share"
-                    text: qsTr("Shared")
-                    font: Tokens.font.label.medium
-                    verticalPadding: Tokens.padding.extraSmall
-                    checked: choice.wantsShared || (choice.session.sharedSelected && !choice.wantsPrivate)
-                    internalChecked: checked
-                    disabled: choice.session.busy
-                    onClicked: if (!choice.session.sharedSelected) choice.session.select("shared")
-                }
-
-                IconTextButton {
-                    fillWidth: true
-                    isToggle: true
-                    type: IconTextButton.Tonal
-                    icon: "lock_person"
-                    text: qsTr("Private")
-                    font: Tokens.font.label.medium
-                    verticalPadding: Tokens.padding.extraSmall
-                    checked: choice.wantsPrivate || (choice.session.privateSelected && !choice.wantsShared)
-                    internalChecked: checked
-                    disabled: choice.session.busy
-                    // Choosing Private starts it when needed.
-                    onClicked: if (!choice.session.privateSelected) choice.session.selectPrivate()
-                }
-            }
-
-            // A private desktop left running in the background can be closed
-            // here; it otherwise keeps its windows for next time.
-            ActionButton {
-                visible: choice.session.privateReady && choice.session.sharedSelected
-                disabled: choice.session.busy
-                icon: "power_settings_new"
-                hint: qsTr("Close the private desktop")
-                onClicked: choice.session.stop()
-            }
-        }
-
-        StyledText {
-            Layout.fillWidth: true
-            Layout.leftMargin: 20 + Tokens.spacing.extraSmall
-            visible: !choice.session.busy && (choice.session.actionError.length > 0 || choice.session.statusError.length > 0)
-            text: choice.session.actionError.length > 0 ? choice.session.actionError : choice.session.statusError
-            color: Colours.palette.m3error
-            wrapMode: Text.Wrap
-            font: Tokens.font.label.small
-        }
     }
 
     Flickable {

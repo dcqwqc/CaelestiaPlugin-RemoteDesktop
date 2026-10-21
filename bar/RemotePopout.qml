@@ -4,12 +4,14 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
+import Caelestia.Components
 import Caelestia.Config
 import Caelestia.Plugins
 import qs.components
 import qs.components.controls
 import qs.services
 import dcqwqc.devices.services as RemoteDesktop
+import dcqwqc.devices.quest as Quest
 import qs.utils
 
 Item {
@@ -22,6 +24,89 @@ Item {
     readonly property real maxPanelHeight: Math.max(220,
         Math.min(680, (Quickshell.screens.length > 0 ? Quickshell.screens[0].height : 900) - 96))
 
+    // Connect independent/unified mouse modes (scoped to paired desktops)
+    readonly property string mouseModeBin: Quickshell.env("HOME") + "/.local/bin/caelestia-connect-mouse-mode"
+    property string mouseMode: "unknown"
+    property var mouseDesktopAvailable: null
+    property bool mouseStatusChecked: false
+    // Keep mode information visible for a configured online pair even when
+    // the peer session has stopped. Only the actual Connect action needs a
+    // verified compositor. This avoids silently hiding the entire control.
+    readonly property bool mousePeerPresent: root.listedDevices.some(d =>
+        !d.isSelf && d.online && d.canRemoteDesktop
+        && !!root.transferTarget(d))
+    readonly property bool mouseControlsAvailable: mousePeerPresent
+    readonly property bool mouseConnectReady: mousePeerPresent && mouseDesktopAvailable === true
+    property string mouseFeedback: ""
+    property bool mousePending: mouseModeSet.running
+
+    function refreshMouseMode(): void {
+        if (mouseModePoll.running || mousePending)
+            return;
+        mouseModePoll.command = [mouseModeBin, "status"];
+        mouseModePoll.running = true;
+    }
+
+    function chooseMouseMode(mode: string): void {
+        if (mousePending)
+            return;
+        mouseFeedback = qsTr("Switching mouse mode…");
+        mouseModeSet.command = [mouseModeBin, "set", mode].concat(mode === "unified" ? ["--onsite"] : []);
+        mouseModeSet.running = true;
+    }
+
+    Process {
+        id: mouseModePoll
+        running: false
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const data = JSON.parse(text);
+                    root.mouseMode = data.mode;
+                    root.mouseDesktopAvailable = typeof data.desktop_available === "boolean" ? data.desktop_available : null;
+                    root.mouseStatusChecked = true;
+                } catch (e) { root.mouseMode = "unknown"; root.mouseDesktopAvailable = null; root.mouseStatusChecked = true; }
+            }
+        }
+    }
+
+    Process {
+        id: mouseModeSet
+        running: false
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const data = JSON.parse(text);
+                    root.mouseMode = data.mode;
+                    root.mouseFeedback = data.mode === "separate"
+                        ? qsTr("Independent mice enabled on both computers")
+                        : data.mode === "unified"
+                        ? qsTr("Unified mouse and keyboard enabled")
+                        : qsTr("Input state needs checking");
+                } catch (e) {}
+            }
+        }
+        stderr: StdioCollector {
+            onStreamFinished: {
+                if (text.trim().length > 0)
+                    root.mouseFeedback = text.trim();
+            }
+        }
+        onExited: code => {
+            if (code !== 0 && !root.mouseFeedback.startsWith("Mouse mode:"))
+                root.mouseFeedback = qsTr("Could not change mouse mode; check peer SSH connection.");
+            root.refreshMouseMode();
+        }
+    }
+
+    Timer {
+        interval: 7000
+        repeat: true
+        running: root.visible
+        triggeredOnStart: true
+        onTriggered: root.refreshMouseMode()
+    }
+    onVisibleChanged: if (visible) root.refreshMouseMode()
     property var exitMenuItems: []
     // Keep expanded peers stable across the five-second Tailscale poll, which
     // replaces the device objects (and may recreate Repeater delegates).
@@ -83,6 +168,7 @@ Item {
             return false;
         return !!device.isSelf
             || device.type === "server"
+            || device.type === "headset"
             || !!device.online
             || !!device.canRemoteDesktop
             || !!device.canWake
@@ -104,6 +190,8 @@ Item {
             return "laptop";
         if (type === "tablet")
             return "tablet_mac";
+        if (type === "headset")
+            return "head_mounted_device";
         return "desktop_windows";
     }
 
@@ -121,6 +209,42 @@ Item {
     property bool phoneMirrorAvailable: false
     property bool phoneMirrorConfigured: false
     property string phoneMirrorHost: ""
+
+    // Drag and drop is restricted to the paired desktop. Never send a file
+    // automatically to an arbitrary Tailscale or SSH device.
+    readonly property string transferBin: Quickshell.env("HOME") + "/.local/bin/caelestia-connect-send-target"
+    property string transferFeedback: ""
+    property string transferHostId: ""
+
+    function transferTarget(device): string {
+        if (!device || device.isSelf) return "";
+        const values = [device.actionHost, device.name].map(x => root.normaliseHost(x).split(".")[0]);
+        return values.includes("mirai") ? "mirai" : values.includes("tachibana") ? "tachibana" : "";
+    }
+
+    function sendFilesToDevice(device, drop): void {
+        const target = transferTarget(device);
+        if (!target || !drop.hasUrls || drop.urls.length === 0) {
+            drop.accepted = false;
+            return;
+        }
+        const paths = [];
+        for (const item of drop.urls) {
+            const url = String(item);
+            if (!url.startsWith("file:///")) {
+                root.transferHostId = String(device.id);
+                root.transferFeedback = qsTr("Only local files can be dropped");
+                drop.accepted = false;
+                return;
+            }
+            paths.push(decodeURIComponent(url.substring(7)));
+        }
+        root.transferHostId = String(device.id);
+        root.transferFeedback = qsTr("Sending %1 file(s) to %2. A desktop notification confirms completion.")
+            .arg(paths.length).arg(target === "mirai" ? "Mirai" : "Tachibana");
+        Quickshell.execDetached([transferBin, target].concat(paths));
+        drop.accepted = true;
+    }
 
     function normaliseHost(value): string {
         let host = String(value ?? "").trim().toLowerCase();
@@ -166,6 +290,40 @@ Item {
                 root.phoneMirrorConfigured = false;
             }
         }
+    }
+
+    // Quest mirroring works over USB or wireless ADB, independently of the
+    // headset's Tailscale state, so it has its own reachability probe.
+    readonly property string questMirrorBin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/quest-mirror`
+    property bool questMirrorAvailable: false
+    property bool questMirrorRunning: false
+    property string questMirrorTransport: ""
+
+    Process {
+        id: questMirrorProbe
+        command: [root.questMirrorBin, "status"]
+        running: true
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const data = JSON.parse(text);
+                    root.questMirrorAvailable = !!data.available;
+                    root.questMirrorRunning = !!data.running;
+                    root.questMirrorTransport = String(data.transport ?? "");
+                } catch (e) {
+                    root.questMirrorAvailable = false;
+                    root.questMirrorRunning = false;
+                }
+            }
+        }
+    }
+
+    // Only while the popout is open: cheap adb/pgrep checks.
+    Timer {
+        interval: 3000
+        repeat: true
+        running: root.visible
+        onTriggered: if (!questMirrorProbe.running) questMirrorProbe.running = true
     }
 
     function syncExitMenu(): void {
@@ -222,9 +380,19 @@ Item {
         required property string hint
         property bool accent: false
 
-        type: IconButton.Text
+        // Material Symbols Rounded in a circular, understated touch target.
+        // Keep control dimensions constant as active state changes.
+        type: accent ? IconButton.Tonal : IconButton.Text
         font: Tokens.font.icon.small
+        padding: Tokens.padding.extraSmall / 2
+        isRound: true
+        radiusMorph: false
         shapeMorph: false
+
+        // Most icons are outlined; an active action receives a soft tint.
+        inactiveColour: Qt.alpha(Colours.palette.m3primary, 0.12)
+        inactiveOnColour: accent ? Colours.palette.m3primary : Colours.palette.m3onSurfaceVariant
+        label.fill: accent ? 1 : 0
 
     }
 
@@ -234,12 +402,16 @@ Item {
         required property var device
 
         readonly property bool isSelf: !!device.isSelf
+        readonly property bool isHeadset: device.type === "headset"
         readonly property bool expanded: isSelf || root.isDeviceExpanded(device.id)
-        readonly property bool online: !!device.online
+        // A headset counts as reachable whenever ADB reaches it (USB or
+        // network), even while its Tailscale client is asleep.
+        readonly property bool online: !!device.online || (isHeadset && root.questMirrorAvailable)
         // The local device summarizes the complete status of this machine,
         // including its MCP tunnel and connectivity dependencies.
         readonly property string health: isSelf
             ? RemoteDesktop.RemoteStatus.overallHealth
+            : isHeadset ? (root.questMirrorAvailable ? "reachable" : "offline")
             : RemoteDesktop.RemoteStatus.deviceHealth(device)
         readonly property string healthError: isSelf
             ? RemoteDesktop.RemoteStatus.overallError
@@ -313,6 +485,28 @@ Item {
                     font: Tokens.font.body.builders.small.weight(Font.Medium).build()
                 }
 
+                DropArea {
+                    id: nameDrop
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: Math.max(0, parent.width - 19)
+                    z: 5
+                    enabled: !hostRow.isSelf && !!root.transferTarget(hostRow.device)
+                    onEntered: drag => {
+                        if (!drag.hasUrls || drag.urls.length === 0)
+                            drag.accepted = false;
+                    }
+                    onDropped: drop => root.sendFilesToDevice(hostRow.device, drop)
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 5
+                        color: "transparent"
+                        border.width: nameDrop.containsDrag ? 1 : 0
+                        border.color: Colours.palette.m3outlineVariant
+                    }
+                }
+
                 Item {
                     id: detailsChevron
                     visible: !hostRow.isSelf
@@ -335,47 +529,90 @@ Item {
                 }
             }
 
-            // Connect / Wake / Terminal stay on the main row and are never
-            // gated by the diagnostics chevron, just like the original UI.
+
+            // Compact, right-aligned per-device actions; details expand independently.
+            // Connect / Wake / Terminal stay on the main row.
             RowLayout {
                 Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
                 spacing: 0
 
                 ActionButton {
+                    visible: hostRow.isHeadset
+                    disabled: !root.questMirrorAvailable && !root.questMirrorRunning
+                    accent: root.questMirrorRunning
+                    icon: root.questMirrorRunning ? "link_off" : "cast"
+                    hint: root.questMirrorRunning ? qsTr("Stop headset mirroring") : qsTr("Mirror headset")
+                    onClicked: {
+                        Quickshell.execDetached([root.questMirrorBin]);
+                        root.questMirrorRunning = !root.questMirrorRunning;
+                    }
+                }
+                ActionButton {
                     visible: root.phoneMirrorMatches(hostRow.device)
                     disabled: !hostRow.online
-                    icon: "link"
+                    icon: "smartphone"
                     hint: qsTr("Mirror phone")
                     onClicked: Quickshell.execDetached([root.phoneMirrorBin])
                 }
+                // Per-device shortcut for the unified mouse/keyboard mode.
+                // This must remain available for stopping sharing even if the
+                // peer compositor disconnects while the input mode is active.
                 ActionButton {
-                    visible: hostRow.device.canRemoteDesktop
-                    disabled: !hostRow.online || hostRow.shared
+                    visible: !hostRow.isSelf && !!root.transferTarget(hostRow.device)
+                        && (root.mouseControlsAvailable || root.mouseMode === "unified")
+                    disabled: root.mousePending ||
+                        (root.mouseMode !== "unified" && !root.mouseConnectReady)
+                    accent: root.mouseMode === "unified"
+                    icon: "swap_horiz"
+                    hint: root.mousePending ? qsTr("Switching mouse mode…")
+                        : root.mouseMode === "unified" ? qsTr("Stop sharing mouse & keyboard")
+                        : !root.mouseStatusChecked ? qsTr("Checking mouse sharing availability…")
+                        : !root.mouseConnectReady ? qsTr("Mouse sharing unavailable: peer desktop offline")
+                        : qsTr("Share mouse & keyboard")
+                    onClicked: root.chooseMouseMode(root.mouseMode === "unified" ? "separate" : "unified")
+                }
+                ActionButton {
+                    visible: hostRow.online && root.mouseConnectReady
+                        && hostRow.device.canRemoteDesktop && !!root.transferTarget(hostRow.device)
+                    disabled: hostRow.shared
                     accent: hostRow.viewing
-                    icon: hostRow.viewing ? "desktop_windows" : "link"
-                    hint: hostRow.viewing ? qsTr("Open remote desktop") : qsTr("Connect")
-                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "open"])
+                    icon: "desktop_windows"
+                    hint: qsTr("Open remote desktop")
+                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin,
+                        root.transferTarget(hostRow.device) || hostRow.device.actionHost, "open"])
+                }
+                ActionButton {
+                    visible: hostRow.online && root.mouseConnectReady
+                        && !!root.transferTarget(hostRow.device)
+                    icon: "visibility"
+                    hint: qsTr("Preview one app (view only)")
+                    onClicked: Quickshell.execDetached([Quickshell.env("HOME")
+                        + "/.local/bin/caelestia-connect-window-preview-launch"])
                 }
                 ActionButton {
                     visible: hostRow.hasSession
                     icon: "link_off"
-                    hint: qsTr("Disconnect")
-                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "leave"])
+                    hint: qsTr("Disconnect remote session")
+                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin,
+                        hostRow.device.id, "leave"])
                 }
                 ActionButton {
-                    visible: hostRow.device.canWake
+                    visible: hostRow.device.canWake && !hostRow.online
                     icon: "bolt"
-                    hint: qsTr("Wake")
-                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.id, "wake"])
+                    hint: qsTr("Wake computer")
+                    onClicked: Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin,
+                        hostRow.device.id, "wake"])
                 }
                 ActionButton {
-                    visible: hostRow.device.canSsh
-                    disabled: !hostRow.online || (hostRow.device.type !== "phone" && !hostRow.device.sshAvailable)
-                    icon: "terminal"
+                    visible: hostRow.device.canSsh && !hostRow.isHeadset
+                    disabled: !hostRow.online ||
+                        (hostRow.device.type !== "phone" && !hostRow.device.sshAvailable)
+                    icon: "code"
                     hint: qsTr("Open terminal")
                     onClicked: hostRow.device.type === "phone"
                         ? Quickshell.execDetached(["ghostty", "-e", "ssh", "nothing-phone"])
-                        : Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin, hostRow.device.actionHost, "ssh"])
+                        : Quickshell.execDetached([RemoteDesktop.RemoteStatus.bin,
+                            hostRow.device.actionHost, "ssh"])
                 }
             }
         }
@@ -385,11 +622,35 @@ Item {
             Layout.leftMargin: Tokens.padding.large
             Layout.rightMargin: Tokens.padding.extraSmall
             visible: hostRow.health !== "reachable" && hostRow.expanded
-            text: hostRow.healthError.length > 0
+            text: hostRow.isHeadset
+                ? qsTr("Not reachable over ADB · plug in USB once to enable wireless")
+                : hostRow.healthError.length > 0
                 ? hostRow.healthError : qsTr("Health check pending; no diagnostic details received yet.")
             color: Colours.palette.m3error
             wrapMode: Text.Wrap
             font: Tokens.font.label.small
+        }
+
+        StyledText {
+            Layout.fillWidth: true
+            Layout.leftMargin: Tokens.padding.large
+            Layout.rightMargin: Tokens.padding.small
+            visible: hostRow.expanded && !hostRow.isSelf && !!root.transferTarget(hostRow.device)
+            text: qsTr("Drop files on this device's name to send to ~/Received Files")
+            color: Colours.palette.m3onSurfaceVariant
+            font: Tokens.font.label.small
+            wrapMode: Text.WordWrap
+        }
+
+        StyledText {
+            Layout.fillWidth: true
+            Layout.leftMargin: Tokens.padding.large
+            Layout.rightMargin: Tokens.padding.small
+            visible: root.transferHostId === String(hostRow.device.id) && root.transferFeedback.length > 0
+            text: root.transferFeedback
+            color: Colours.palette.m3primary
+            font: Tokens.font.label.small
+            wrapMode: Text.WordWrap
         }
 
         // Remote peers can show their diagnosis on demand without moving any actions.
@@ -398,8 +659,134 @@ Item {
             Layout.leftMargin: Tokens.padding.large
             Layout.rightMargin: Tokens.padding.extraSmall
             visible: !hostRow.isSelf && hostRow.expanded && hostRow.health === "reachable"
-            text: qsTr("Tailscale connected · SSH TCP/22 reachable")
+            text: hostRow.isHeadset
+                ? (root.questMirrorTransport === "usb" ? qsTr("ADB over USB") : qsTr("ADB over network"))
+                : qsTr("Tailscale connected · SSH TCP/22 reachable")
             color: Colours.palette.m3onSurfaceVariant
+            wrapMode: Text.Wrap
+            font: Tokens.font.label.small
+        }
+
+        // Which desktop of this computer the headset shows and controls.
+        Loader {
+            // This is a control for the local host's desktop, not another
+            // device row. Indent it beneath the computer name and label the
+            // host explicitly so it cannot be confused with the Quest peer.
+            Layout.fillWidth: true
+            Layout.leftMargin: 36
+            Layout.rightMargin: Tokens.padding.extraSmall
+            active: hostRow.isSelf && Quest.QuestSession.available
+            visible: active
+            sourceComponent: HeadsetDesktop { hostLabel: root.deviceName(hostRow.device) }
+        }
+    }
+
+    // Shared: the local computer's desktop. Private: a separate desktop with
+    // its own windows, pointer and keyboard, started on demand. This is a
+    // nested host setting, deliberately distinct from the Quest device row.
+    component HeadsetDesktop: ColumnLayout {
+        id: choice
+
+        property string hostLabel: qsTr("this computer")
+        readonly property var session: Quest.QuestSession
+        readonly property bool wantsPrivate: session.pendingAction === "select-private" || session.pendingAction === "start"
+        readonly property bool wantsShared: session.pendingAction === "select-shared"
+
+        spacing: Tokens.spacing.extraSmall
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Tokens.spacing.extraSmall
+
+            Item {
+                implicitWidth: 20
+                implicitHeight: 20
+                Layout.alignment: Qt.AlignVCenter
+
+                MaterialIcon {
+                    anchors.centerIn: parent
+                    text: "desktop_windows"
+                    fontStyle: Tokens.font.icon.small
+                    color: Colours.palette.m3secondary
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 0
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: qsTr("Quest desktop")
+                    color: Colours.palette.m3onSurface
+                    font: Tokens.font.label.medium
+                }
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: qsTr("Hosted by %1").arg(choice.hostLabel)
+                    color: Colours.palette.m3onSurfaceVariant
+                    font: Tokens.font.label.small
+                }
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.leftMargin: 20 + Tokens.spacing.extraSmall
+            spacing: Tokens.spacing.extraSmall
+
+            ButtonRow {
+                Layout.fillWidth: true
+                spacing: Tokens.spacing.extraSmall / 2
+
+                IconTextButton {
+                    fillWidth: true
+                    isToggle: true
+                    type: IconTextButton.Tonal
+                    icon: "screen_share"
+                    text: qsTr("Shared")
+                    font: Tokens.font.label.medium
+                    verticalPadding: Tokens.padding.extraSmall
+                    checked: choice.wantsShared || (choice.session.sharedSelected && !choice.wantsPrivate)
+                    internalChecked: checked
+                    disabled: choice.session.busy
+                    onClicked: if (!choice.session.sharedSelected) choice.session.select("shared")
+                }
+
+                IconTextButton {
+                    fillWidth: true
+                    isToggle: true
+                    type: IconTextButton.Tonal
+                    icon: "lock_person"
+                    text: qsTr("Private")
+                    font: Tokens.font.label.medium
+                    verticalPadding: Tokens.padding.extraSmall
+                    checked: choice.wantsPrivate || (choice.session.privateSelected && !choice.wantsShared)
+                    internalChecked: checked
+                    disabled: choice.session.busy
+                    // Choosing Private starts it when needed.
+                    onClicked: if (!choice.session.privateSelected) choice.session.selectPrivate()
+                }
+            }
+
+            // A private desktop left running in the background can be closed
+            // here; it otherwise keeps its windows for next time.
+            ActionButton {
+                visible: choice.session.privateReady && choice.session.sharedSelected
+                disabled: choice.session.busy
+                icon: "power_settings_new"
+                hint: qsTr("Close the private desktop")
+                onClicked: choice.session.stop()
+            }
+        }
+
+        StyledText {
+            Layout.fillWidth: true
+            Layout.leftMargin: 20 + Tokens.spacing.extraSmall
+            visible: !choice.session.busy && (choice.session.actionError.length > 0 || choice.session.statusError.length > 0)
+            text: choice.session.actionError.length > 0 ? choice.session.actionError : choice.session.statusError
+            color: Colours.palette.m3error
             wrapMode: Text.Wrap
             font: Tokens.font.label.small
         }
@@ -549,6 +936,10 @@ Item {
                 // Use the popout root for the menu overlay instead.
                 parent: root
                 attachTo: routePicker
+                // The route picker is the last row; open the menu above it
+                // instead of past the bottom edge of the popout/screen.
+                attachSideY: Menu.Top
+                thisSideY: Menu.Bottom
                 items: root.exitMenuItems
                 active: null
                 onItemSelected: item => {

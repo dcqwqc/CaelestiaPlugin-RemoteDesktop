@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Mirrors a Meta Quest's view in a floating scrcpy window (one clean eye of
+# the stereo framebuffer). Uses an already-authorised ADB connection: USB if
+# the headset is plugged in, otherwise ADB over its Tailscale or Wi-Fi
+# address (enabled once with `adb tcpip 5555` while on USB). Never prompts
+# on the headset beyond Android's own ADB authorisation.
+#
+#   quest-mirror status   JSON: {"available", "running", "transport", "serial"}
+#   quest-mirror          start the mirror, or close it if already open
+set -uo pipefail
+
+title="Quest"
+port="${QSW_ADB_PORT:-5555}"
+
+serial_matching() {
+    adb devices -l 2>/dev/null | awk 'NR > 1 && $2 == "device" && (tolower($0) ~ /model:quest|product:eureka|product:hollywood|product:panther/) { print $1; exit }'
+}
+
+# Network addresses the headset may be listening on: Tailscale first.
+candidates() {
+    tailscale status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    peers = json.load(sys.stdin).get("Peer", {}).values()
+except Exception:
+    sys.exit(0)
+for peer in peers:
+    if "quest" in (peer.get("HostName", "") + peer.get("DNSName", "")).lower():
+        for ip in peer.get("TailscaleIPs", []):
+            if ":" not in ip:
+                print(ip)
+'
+}
+
+find_serial() {
+    local serial
+    serial="$(serial_matching)"
+    if [[ -n "$serial" ]]; then
+        printf '%s\n' "$serial"
+        return 0
+    fi
+    [[ "${1:-}" == "--connect" ]] || return 1
+    for host in $(candidates); do
+        timeout 3 adb connect "$host:$port" >/dev/null 2>&1 || continue
+        serial="$(serial_matching)"
+        [[ -n "$serial" ]] && { printf '%s\n' "$serial"; return 0; }
+    done
+    return 1
+}
+
+running_pid() {
+    pgrep -f -- "scrcpy .*--window-title=$title( |$)" | head -n1
+}
+
+case "${1:-}" in
+    status)
+        serial="$(find_serial || true)"
+        pid="$(running_pid || true)"
+        transport=""
+        [[ -n "$serial" ]] && { [[ "$serial" == *:* ]] && transport="network" || transport="usb"; }
+        printf '{"available": %s, "running": %s, "transport": "%s", "serial": "%s"}\n' \
+            "$([[ -n "$serial" ]] && echo true || echo false)" \
+            "$([[ -n "$pid" ]] && echo true || echo false)" "$transport" "$serial"
+        ;;
+    "")
+        pid="$(running_pid || true)"
+        if [[ -n "$pid" ]]; then
+            kill "$pid"
+            exit 0
+        fi
+        serial="$(find_serial --connect)" || {
+            notify-send -a Devices -i video-display "Quest not reachable" \
+                "Plug the headset in over USB, or enable wireless ADB once while it is plugged in." 2>/dev/null
+            exit 1
+        }
+        exec scrcpy --serial="$serial" --crop=2064:2208:0:0 --no-audio --max-fps=60 \
+            --max-size=1600 --window-title="$title" --no-power-on --stay-awake
+        ;;
+    *)
+        echo "usage: quest-mirror [status]" >&2
+        exit 2
+        ;;
+esac

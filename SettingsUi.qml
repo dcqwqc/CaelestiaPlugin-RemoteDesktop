@@ -5,6 +5,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import Caelestia.Config
 import Caelestia.Plugins
+import dcqwqc.devices
 import qs.components
 import qs.components.controls
 import qs.modules.nexus.common
@@ -24,7 +25,8 @@ ColumnLayout {
         { label: "Laptop", value: "laptop" },
         { label: "Server", value: "dns" },
         { label: "Phone", value: "smartphone" },
-        { label: "Tablet", value: "tablet_mac" }
+        { label: "Tablet", value: "tablet_mac" },
+        { label: "VR headset", value: "head_mounted_device" }
     ]
 
     readonly property var devices: {
@@ -90,6 +92,8 @@ ColumnLayout {
             return "laptop";
         if (type === "tablet")
             return "tablet_mac";
+        if (type === "headset")
+            return "head_mounted_device";
         return "desktop_windows";
     }
 
@@ -153,6 +157,14 @@ ColumnLayout {
 
     SectionHeader {
         first: true
+        text: qsTr("Caelestia Connect")
+    }
+
+    PluginConnectSettings {
+        Layout.fillWidth: true
+    }
+
+    SectionHeader {
         text: "Devices"
     }
 

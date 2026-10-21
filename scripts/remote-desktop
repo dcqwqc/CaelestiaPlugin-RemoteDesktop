@@ -188,13 +188,27 @@ mkdir -p "$state_dir"
 # streamed. Only `moonlight stream <host> <app>` is a session, so match that and
 # read the far end out of the client's own command line -- which cannot go stale
 # the way a state file outlives the process it describes.
+# Match an actual Moonlight executable with argv[1] == stream. A broad
+# pgrep -f regex can mistake an unrelated terminal/agent command that mentions
+# 'moonlight stream' for a live stream, causing open() to exit without starting it.
+stream_clients() {
+    local pid
+    local -a argv
+    while IFS= read -r pid; do
+        argv=()
+        mapfile -d '' -t argv <"/proc/$pid/cmdline" 2>/dev/null || continue
+        [[ ${argv[1]:-} == stream && -n ${argv[2]:-} ]] || continue
+        printf '%s	%s
+' "$pid" "${argv[2]}"
+    done < <(pgrep -u "$(id -u)" -x moonlight 2>/dev/null || true)
+}
+
 stream_pids() {
-    pgrep -u "$(id -u)" -f 'moonlight +stream ' 2>/dev/null || true
+    stream_clients | cut -f1
 }
 
 streaming_host() {
-    pgrep -u "$(id -u)" -a -f 'moonlight +stream ' 2>/dev/null \
-        | awk '{ for (i = 2; i < NF; i++) if ($i == "stream") { print $(i + 1); exit } }'
+    stream_clients | awk -F '	' 'NR == 1 { print $2 }'
 }
 
 # A Moonlight session running *here* means this machine is the viewer.

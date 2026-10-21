@@ -86,6 +86,8 @@ ColumnLayout {
                     const r = data.remote ?? data;
                     if (data.state === "offline")
                         root.say(qsTr("%1 is offline").arg(root.targetHost), true);
+                    else if (data.state === "timeout")
+                        root.say(qsTr("No response from %1; check before retrying").arg(root.targetHost), true);
                     else if (r.state === "launched")
                         root.say(qsTr("Opened on %1").arg(root.targetHost), false);
                     else
@@ -94,6 +96,11 @@ ColumnLayout {
                     root.say(qsTr("Handoff failed"), true);
                 }
             }
+        }
+        onExited: code => {
+            // Spawn failure or crash: never leave "Opening…" on screen.
+            if (code !== 0 && root.statusText.indexOf("…") >= 0)
+                root.say(qsTr("Handoff did not complete"), true);
         }
     }
 

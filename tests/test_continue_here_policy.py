@@ -30,9 +30,15 @@ class ContinueHerePolicyTests(unittest.TestCase):
         self.assertIn('spaces.length > 0', QML)
 
     def test_only_existing_spaces_are_offered(self):
-        self.assertIn('never created here', QML)
-        self.assertNotRegex(QML, r'--create|new space', )
+        self.assertIn('root.spaces = peer && peer.spaces ? peer.spaces : [];', QML)
+        self.assertNotIn('"--create', QML)
 
+    def test_launch_function_called_only_from_click_handler(self):
+        calls = [m.start() for m in re.finditer(r'root\.cont\(\)', QML)]
+        self.assertEqual(len(calls), 1)
+        line = QML[:calls[0]].rsplit('\n', 1)[-1]
+        self.assertIn('onClicked:', line)
+        self.assertIn('if (!canContinue)', QML)
 
 if __name__ == '__main__':
     unittest.main()

@@ -150,10 +150,15 @@ def country_options(rows):
 def relay_options(rows, country):
     if not re.fullmatch("[A-Z]{2}", country):
         raise RouteError("Select a valid country.")
+    matches = [row for row in rows if row.get("country", "JP") == country]
+    # Directory Score measures popularity/uptime, not throughput. The UI
+    # explicitly offers fastest advertised relays first.
+    matches.sort(key=lambda row: (float(row.get("mbps", 0)),
+                                   int(row.get("score", 0))), reverse=True)
     return [
         {k: row[k] for k in ("id", "ip", "score", "mbps", "ping", "sessions")}
-        for row in rows if row.get("country", "JP") == country
-    ][:12]
+        for row in matches
+    ]
 
 
 
@@ -190,6 +195,7 @@ def status():
          "location": display_country(current.get("country", "JP"), current.get("countryName", "Japan" if current.get("country", "JP") == "JP" else "")),
         "country": current.get("country", "JP"),
         "server": current.get("ip", ""),
+        "serverId": current.get("id", ""),
         "cachedServers": len(cache.get("servers", []))
     }
 

@@ -65,6 +65,20 @@ class VpnGateTests(unittest.TestCase):
         rows = [{"country":"RU","countryName":"Russian Federation"}]
         self.assertEqual(script.country_options(rows)[0]["name"], "Russia")
 
+    def test_servers_are_sorted_by_advertised_bandwidth_without_truncation(self):
+        servers = [
+            {"country": "JP", "id": f"id{n}", "ip": f"192.0.2.{n + 1}",
+             "score": 9999 if n == 0 else 1,
+             "mbps": float(n), "ping": 20, "sessions": 0}
+            for n in range(25)
+        ]
+        visible = script.relay_options(servers, "JP")
+        self.assertEqual(len(visible), 25)
+        self.assertEqual([s["mbps"] for s in visible],
+                         sorted([s["mbps"] for s in servers], reverse=True))
+        self.assertEqual(visible[0]["id"], "id24")
+        self.assertEqual(visible[-1]["id"], "id0")
+
     def test_country_code_is_validated(self):
         with self.assertRaises(script.RouteError):
             script.relay_options([], "../JP")

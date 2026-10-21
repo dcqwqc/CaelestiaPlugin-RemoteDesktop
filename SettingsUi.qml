@@ -316,6 +316,14 @@ ColumnLayout {
     }
 
     SectionHeader {
+        text: qsTr("Continuity")
+    }
+
+    ContinuityPanel {
+        Layout.fillWidth: true
+    }
+
+    SectionHeader {
         text: "Streaming"
     }
 

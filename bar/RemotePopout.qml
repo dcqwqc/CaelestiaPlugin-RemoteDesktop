@@ -11,6 +11,7 @@ import qs.components
 import qs.components.controls
 import qs.services
 import dcqwqc.devices.services as RemoteDesktop
+import dcqwqc.devices.bar as DeviceBar
 import dcqwqc.devices.quest as Quest
 import qs.utils
 
@@ -960,6 +961,13 @@ Item {
         color: Colours.palette.m3error
         wrapMode: Text.Wrap
         font: Tokens.font.label.small
+    }
+
+    // Separate from the existing Tailscale Route/MCP tunnel controls.
+    DeviceBar.VpnRoutePanel {
+        Layout.fillWidth: true
+        Layout.leftMargin: Tokens.padding.extraSmall
+        Layout.rightMargin: Tokens.padding.extraSmall
     }
 
         } // deviceContent

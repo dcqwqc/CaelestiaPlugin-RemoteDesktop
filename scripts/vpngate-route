@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""VPN Gate Japan route manager for the Caelestia Devices plugin.
+
+User initiated only. Does NOT change Tailscale settings or auto-connect.
+Import via NetworkManager/OpenVPN; never execute directives from relay profiles.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import csv
+import hashlib
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+
+URL = "https://www.vpngate.net/api/iphone/"
+STATE = Path.home() / ".local/state/caelestia-vpngate"
+CACHE = STATE / "servers.json"
+CURRENT = STATE / "current.json"
+PROFILE = STATE / "japan.ovpn"
+CONN = "Caelestia VPN Gate Japan"
+MAX_AGE = 1800
+
+
+class RouteError(Exception):
+    pass
+
+
+def run(args, timeout=25):
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RouteError(f"Cannot run {args[0]}: {exc}") from exc
+    if p.returncode:
+        raise RouteError((p.stderr or p.stdout or f"exit {p.returncode}").strip()[:350])
+    return p.stdout
+
+
+
+def nmcli(*args, timeout=30):
+    """Use normal desktop NetworkManager auth; ask Polkit if it was denied."""
+    cmd = ["nmcli", *args]
+    try:
+        return run(cmd, timeout=timeout)
+    except RouteError as exc:
+        denied = any(word in str(exc).lower() for word in
+                     ("insufficient privileges", "not authorized", "not authorised"))
+        if not denied or not (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")):
+            raise
+        return run(["pkexec", "/usr/bin/nmcli", *args], timeout=max(timeout, 60))
+
+
+def put_json(path, data):
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".new")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+def read_json(path, default):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def filtered_rows(text):
+    lines = text.splitlines()
+    header = next((line[1:] for line in lines if line.startswith("#HostName,")), None)
+    if header is None:
+        raise RouteError("VPN Gate directory returned an invalid CSV response.")
+    body = [line for line in lines if line and not line.startswith(("#", "*"))]
+    if not body:
+        raise RouteError("VPN Gate returned no relay servers.")
+    result = []
+    for row in csv.DictReader([header] + body):
+        if row.get("CountryShort") != "JP":
+            continue
+        try:
+            addr = str(ipaddress.IPv4Address(row["IP"]))
+            raw = row["OpenVPN_ConfigData_Base64"]
+            if not raw or len(raw) > 130000:
+                continue
+            score = int(row.get("Score", "0") or 0)
+            speed = int(row.get("Speed", "0") or 0)
+            ping = int(row.get("Ping", "0") or 0)
+            sid = hashlib.sha256(f"{addr}:{raw}".encode()).hexdigest()[:16]
+            result.append({
+                "id": sid, "ip": addr,
+                "host": row.get("HostName", "")[:100],
+                "score": max(0, score),
+                "mbps": round(max(0, speed) / 1_000_000, 1),
+                "ping": max(0, ping),
+                "sessions": max(0, int(row.get("NumVpnSessions", "0") or 0)),
+                "config": raw,
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+    result.sort(key=lambda s: (s["score"], s["mbps"]), reverse=True)
+    if not result:
+        raise RouteError("No Japanese VPN Gate relays are listed at the moment.")
+    return result[:35]
+
+
+def directory(force=False):
+    prev = read_json(CACHE, {})
+    if not force and time.time() - prev.get("time", 0) < MAX_AGE and prev.get("servers"):
+        return prev["servers"], False
+    try:
+        raw = run(["curl", "-fLsS", "--compressed", "--connect-timeout", "10",
+                   "--max-time", "50", "--max-filesize", "3500000", URL], timeout=55)
+        rows = filtered_rows(raw)
+        put_json(CACHE, {"time": time.time(), "servers": rows})
+        return rows, False
+    except (RouteError, ValueError) as exc:
+        if prev.get("servers"):
+            return prev["servers"], True
+        raise RouteError(f"VPN Gate directory unavailable: {exc}") from exc
+
+
+def active():
+    try:
+        listing = run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"])
+        return any(line == f"{CONN}:vpn" for line in listing.splitlines())
+    except RouteError:
+        return False
+
+
+def installed():
+    try:
+        listing = run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"])
+        return any(line == f"{CONN}:vpn" for line in listing.splitlines())
+    except RouteError:
+        return False
+
+
+def status():
+    current = read_json(CURRENT, {})
+    cache = read_json(CACHE, {})
+    return {
+        "connected": active(),
+        "configured": installed(),
+        "location": "Japan",
+        "provider": "VPN Gate",
+        "server": current.get("ip", ""),
+        "cachedServers": len(cache.get("servers", [])),
+        "stale": bool(cache and time.time() - cache.get("time", 0) > MAX_AGE),
+    }
+
+
+def checked_profile(raw, target_ip):
+    """Reduce untrusted OVPN to a strict, non-script-bearing client profile."""
+    try:
+        data = base64.b64decode(raw, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RouteError("Invalid relay OpenVPN data.") from exc
+    if len(data) > 100000:
+        raise RouteError("Relay profile exceeds safety limit.")
+    tags = {"ca", "cert", "key", "tls-auth", "tls-crypt"}
+    blocks = {}
+    current_tag = None
+    current_lines = []
+    proto = "udp"
+    port = None
+    remote_cert_tls = False
+    wants_auth = False
+    cipher = None
+    data_ciphers = None
+    auth = None
+    comp_lzo = False
+    for line in data.splitlines():
+        stripped = line.strip()
+        if current_tag:
+            if stripped == f"</{current_tag}>":
+                content = "\n".join(current_lines) + "\n"
+                if len(content) > 30000 or not re.search("-----BEGIN [A-Z ]+-----", content):
+                    raise RouteError(f"Invalid {current_tag} certificate block.")
+                blocks[current_tag] = content
+                current_tag = None
+                current_lines = []
+            elif stripped.startswith("</") or stripped.startswith("<"):
+                raise RouteError("Nested or unexpected inline block.")
+            else:
+                current_lines.append(line)
+            continue
+        if not stripped or stripped.startswith(("#", ";")):
+            continue
+        if stripped in [f"<{x}>" for x in tags]:
+            current_tag = stripped[1:-1]
+            continue
+        if stripped.startswith("<"):
+            raise RouteError("Unsupported inline profile directive.")
+        pieces = stripped.split()
+        key = pieces[0].lower()
+        val = pieces[1:]
+        if key == "remote":
+            if len(val) < 2 or str(ipaddress.IPv4Address(val[0])) != target_ip:
+                raise RouteError("Relay address does not match the server directory.")
+            if not val[1].isdigit() or not 1 <= int(val[1]) <= 65535:
+                raise RouteError("Invalid OpenVPN port.")
+            port = int(val[1])
+        elif key == "proto":
+            if val not in (["udp"], ["tcp"], ["tcp-client"]):
+                raise RouteError("Unsupported VPN protocol.")
+            proto = val[0]
+        elif key == "remote-cert-tls":
+            if val != ["server"]:
+                raise RouteError("Unexpected remote TLS mode.")
+            remote_cert_tls = True
+        elif key == "auth-user-pass":
+            wants_auth = True
+        elif key == "data-ciphers" and len(val) == 1 and re.fullmatch(r"[A-Za-z0-9:-]{3,180}", val[0]):
+            data_ciphers = val[0]
+        elif key == "cipher" and len(val) == 1 and re.fullmatch(r"[A-Za-z0-9-]{3,40}", val[0]):
+            cipher = val[0]
+        elif key == "auth" and len(val) == 1 and re.fullmatch(r"[A-Za-z0-9-]{3,40}", val[0]):
+            auth = val[0]
+        elif key == "comp-lzo" and (not val or val == ["yes"]):
+            comp_lzo = True
+        elif key in {
+            "client", "dev", "resolv-retry", "nobind", "persist-key", "persist-tun",
+            "verb", "tls-client", "remote-random", "explicit-exit-notify",
+            "auth-nocache", "connect-retry", "connect-retry-max", "reneg-sec",
+            "tun-mtu", "mssfix", "float", "auth-retry", "pull", "setenv", "key-direction"
+        }:
+            # Ignore upstream behavioral directives; emit only controlled client settings.
+            continue
+        else:
+            raise RouteError(f"Relay contains unsupported OpenVPN directive: {key}")
+    if current_tag or not port or "ca" not in blocks:
+        raise RouteError("Incomplete relay profile, missing CA, or invalid server address.")
+    output = [
+        "client", "dev tun", f"proto {proto}", f"remote {target_ip} {port}",
+        "nobind", "persist-key", "persist-tun", "verb 3",
+    ]
+    if remote_cert_tls:
+        output.append("remote-cert-tls server")
+    if wants_auth:
+        output.extend(["auth-user-pass", "auth-nocache"])
+    if cipher:
+        output.append(f"cipher {cipher}")
+    if data_ciphers:
+        output.append(f"data-ciphers {data_ciphers}")
+    if auth:
+        output.append(f"auth {auth}")
+    if comp_lzo:
+        output.append("comp-lzo")
+    for tag in ("ca", "cert", "key", "tls-auth", "tls-crypt"):
+        if tag in blocks:
+            output.extend([f"<{tag}>", blocks[tag].rstrip(), f"</{tag}>"])
+    return "\n".join(output) + "\n"
+
+
+def tailscale_exit_active():
+    try:
+        d = json.loads(run(["tailscale", "status", "--json"], timeout=6))
+        return bool(d.get("ExitNodeStatus"))
+    except (RouteError, ValueError):
+        return False
+
+
+def connect(server_id):
+    if active():
+        raise RouteError("Disconnect the current VPN Gate route before changing servers.")
+    if tailscale_exit_active():
+        raise RouteError("Disable the Tailscale exit node first; MCP routing stays unchanged.")
+    entries, stale = directory()
+    candidate = next((row for row in entries if row["id"] == server_id), None)
+    if not candidate:
+        raise RouteError("Server no longer cached. Refresh Japan servers and retry.")
+    data = checked_profile(candidate["config"], candidate["ip"])
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(PROFILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(data)
+    if installed():
+        nmcli("connection", "delete", CONN, timeout=40)
+    # NetworkManager's Polkit agent handles authorization for the desktop user.
+    output = nmcli("connection", "import", "type", "openvpn", "file", str(PROFILE), timeout=60)
+    match = re.search(r"Connection ['‘](.+?)['’] \(", output)
+    if match:
+        imported = match.group(1)
+    else:
+        # nmcli chooses a profile name from the file name, often "japan".
+        imported = PROFILE.stem
+    nmcli("connection", "modify", imported,
+          "connection.id", CONN, "connection.autoconnect", "no",
+          "ipv4.never-default", "no", "ipv6.method", "disabled", timeout=50)
+    if "auth-user-pass" in data:
+        nmcli("connection", "modify", CONN,
+              "vpn.user-name", "vpn", "vpn.secrets", "password=vpn", timeout=50)
+    put_json(CURRENT, {"id": server_id, "ip": candidate["ip"], "time": time.time()})
+    nmcli("--wait", "35", "connection", "up", CONN, timeout=60)
+    return {"connected": active(), "server": candidate["ip"], "stale": stale}
+
+
+def disconnect():
+    if active():
+        nmcli("--wait", "20", "connection", "down", CONN, timeout=45)
+    return status()
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("action", choices=["status", "servers", "refresh", "connect", "disconnect", "verify"])
+    p.add_argument("server", nargs="?")
+    args = p.parse_args()
+    if args.action == "status":
+        data = status()
+    elif args.action in ("servers", "refresh"):
+        rows, stale = directory(force=args.action == "refresh")
+        data = {"servers": [
+            {k: item[k] for k in ("id", "ip", "host", "score", "mbps", "ping", "sessions")}
+            for item in rows[:10]
+        ], "stale": stale}
+    elif args.action == "connect":
+        if not args.server or not re.fullmatch(r"[a-f0-9]{16}", args.server):
+            raise RouteError("Choose a listed VPN Gate Japan server first.")
+        data = connect(args.server)
+    elif args.action == "disconnect":
+        data = disconnect()
+    elif args.action == "verify":
+        if not active():
+            raise RouteError("Connect to VPN Gate before verifying its public IP.")
+        raw = run(["curl", "-fLsS", "--max-time", "10", "https://ipinfo.io/json"], timeout=13)
+        info = json.loads(raw)
+        data = {"ip": str(info.get("ip", ""))[:80], "country": info.get("country", ""),
+                "japan": info.get("country") == "JP"}
+    print(json.dumps({"ok": True, **data}))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (RouteError, ValueError, OSError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)[:400]}))
+        sys.exit(1)

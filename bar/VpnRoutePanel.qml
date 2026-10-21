@@ -102,6 +102,8 @@ ColumnLayout {
                 vpn.errorText = qsTr("VPN action failed. Try again or check NetworkManager permissions.");
             if (vpn.lastAction === "connect" || vpn.lastAction === "disconnect")
                 statusTimer.restart();
+            else if (vpn.expanded && vpn.lastAction === "status" && !vpn.servers.length)
+                Qt.callLater(() => vpn.execute("servers", ""));
         }
     }
 

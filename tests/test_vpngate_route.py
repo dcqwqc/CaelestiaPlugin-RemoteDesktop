@@ -52,6 +52,14 @@ class VpnGateTests(unittest.TestCase):
         self.assertNotIn("setenv", clean)
         self.assertIn("<ca>", clean)
 
+    def test_live_vpngate_cipher_negotiation(self):
+        data = sample(extra="data-ciphers AES-128-CBC")
+        data = data.replace("auth-user-pass", "")
+        data = data.replace("remote-cert-tls server", "")
+        clean = script.checked_profile(base64.b64encode(data.encode()).decode(), "203.0.113.11")
+        self.assertIn("data-ciphers AES-128-CBC", clean)
+        self.assertNotIn("auth-user-pass", clean)
+
     def test_reject_volunteer_shell_commands(self):
         data = sample(extra="script-security 2\nup /bin/sh")
         with self.assertRaises(script.RouteError):

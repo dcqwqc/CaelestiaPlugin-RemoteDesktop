@@ -17,6 +17,11 @@ import qs.utils
 Item {
     id: root
 
+    // One truthful route label: the effective VPN country takes precedence
+    // over the independent Tailscale exit-node selector.
+    property bool vpnConnected: false
+    property string vpnExitCountry: ""
+
     implicitWidth: 304
     // Keep the bar popout within a small/rotated display; expanding several
     // peers scrolls inside the panel rather than pushing it off screen.
@@ -805,18 +810,23 @@ Item {
         property bool browsing: false
         property bool working: false
         property bool showCountries: false
-        property bool showAllServers: false
         property string countryCode: "JP"
         property string countryName: "Japan"
         property string selectedId: ""
         property string serverIp: ""
         property string errorText: ""
-        property string infoText: ""
+        property string verifiedExit: ""
         property string browseAction: ""
         property string nextCountry: ""
         property string actionName: ""
         property var countries: []
         property var servers: []
+
+        onConnectedChanged: {
+            root.vpnConnected = connected;
+            root.vpnExitCountry = connected ? countryName : "";
+        }
+        onCountryNameChanged: if (connected) root.vpnExitCountry = countryName;
 
         function readStatus() {
             if (statusProcess.running || working)
@@ -830,8 +840,6 @@ Item {
                 return;
             browsing = true;
             browseAction = action;
-            if (action === "refresh")
-                infoText = qsTr("Updating locations…");
             browserProcess.command = [helper, action].concat(argument ? [argument] : []);
             browserProcess.running = true;
         }
@@ -861,7 +869,7 @@ Item {
             working = true;
             actionName = name;
             errorText = "";
-            infoText = "";
+            verifiedExit = "";
             actionProcess.command = [helper, name]
                 .concat(name === "connect" ? [selectedId] : []);
             actionProcess.running = true;
@@ -878,6 +886,8 @@ Item {
                         vpn.connected = !!result.connected;
                         vpn.tailscaleExitActive = !!result.tailscaleExitActive;
                         vpn.serverIp = result.server || "";
+                        if (vpn.connected && result.serverId)
+                            vpn.selectedId = result.serverId;
                         if (vpn.connected && result.country) {
                             vpn.countryCode = result.country;
                             vpn.countryName = result.location || result.country;
@@ -906,14 +916,16 @@ Item {
                                 const selected = vpn.countries.find(c => c.code === vpn.countryCode);
                                 if (selected) vpn.countryName = selected.name;
                             }
-                            vpn.infoText = result.stale ? qsTr("Using saved server list") : "";
                             vpn.nextCountry = vpn.countryCode;
                         } else if (vpn.browseAction === "servers") {
                             vpn.servers = result.servers || [];
                             if (!vpn.servers.some(s => s.id === vpn.selectedId))
                                 vpn.selectedId = vpn.servers.length ? vpn.servers[0].id : "";
-                            if (!vpn.servers.length)
-                                vpn.infoText = qsTr("No relays available here.");
+                            if (vpn.connected) {
+                                const currentIndex = vpn.servers.findIndex(s => s.id === vpn.selectedId);
+                                if (currentIndex >= 0)
+                                    Qt.callLater(() => serverList.positionViewAtIndex(currentIndex, ListView.Center));
+                            }
                         }
                     } catch (e) {
                         vpn.errorText = qsTr("Couldn't read server list.");
@@ -943,11 +955,10 @@ Item {
                             return;
                         }
                         if (vpn.actionName === "verify") {
-                            vpn.infoText = qsTr("Exit: %1 · %2").arg(result.country || "?").arg(result.ip || "?");
+                            vpn.verifiedExit = qsTr("%1 · %2").arg(result.country || "?").arg(result.ip || "?");
                         } else {
                             vpn.connected = !!result.connected;
                             vpn.serverIp = result.server || "";
-                            vpn.infoText = vpn.connected ? qsTr("Connected") : qsTr("Disconnected");
                         }
                     } catch (e) {
                         vpn.errorText = qsTr("VPN returned an invalid response.");
@@ -971,7 +982,7 @@ Item {
         Timer {
             interval: 15000
             repeat: true
-            running: vpn.expanded && vpn.visible
+            running: vpn.visible
             onTriggered: vpn.readStatus()
         }
         Component.onCompleted: vpn.readStatus()
@@ -987,43 +998,41 @@ Item {
 
         Rectangle {
             Layout.fillWidth: true
-            implicitHeight: 49
-            radius: 12
+            implicitHeight: 33
+            radius: Tokens.rounding.medium
             color: vpn.expanded ? Colours.tPalette.m3surfaceContainerHighest : "transparent"
+
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 11
-                anchors.rightMargin: 11
-                spacing: 9
+                anchors.leftMargin: 7
+                anchors.rightMargin: 7
+                spacing: Tokens.spacing.extraSmall
                 MaterialIcon {
                     text: "public"
                     fontStyle: Tokens.font.icon.small
                     color: Colours.palette.m3onSurfaceVariant
                 }
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 0
-                    StyledText {
-                        text: qsTr("VPN")
-                        font: Tokens.font.body.small
-                        color: Colours.palette.m3onSurface
-                    }
-                    StyledText {
-                        text: vpn.connected ? vpn.countryName + qsTr(" · Connected") : vpn.tailscaleExitActive ? qsTr("Tailscale route") : qsTr("Direct")
-                        font: Tokens.font.label.small
-                        color: Colours.palette.m3onSurfaceVariant
-                    }
+                StyledText {
+                    text: qsTr("VPN")
+                    font: Tokens.font.body.small
+                    color: Colours.palette.m3onSurface
                 }
+                Item { Layout.fillWidth: true }
                 Rectangle {
-                    width: 7
-                    height: 7
-                    radius: 3.5
+                    width: 6
+                    height: 6
+                    radius: 3
                     color: vpn.connected ? "#43a047" : Colours.palette.m3onSurfaceVariant
+                }
+                StyledText {
+                    text: vpn.connected ? vpn.countryName : qsTr("Off")
+                    font: Tokens.font.label.small
+                    color: Colours.palette.m3onSurfaceVariant
                 }
                 MaterialIcon {
                     text: vpn.expanded ? "expand_less" : "expand_more"
-                    color: Colours.palette.m3onSurfaceVariant
                     fontStyle: Tokens.font.icon.small
+                    color: Colours.palette.m3onSurfaceVariant
                 }
             }
             MouseArea {
@@ -1035,38 +1044,34 @@ Item {
 
         ColumnLayout {
             Layout.fillWidth: true
-            Layout.leftMargin: 10
-            Layout.rightMargin: 10
-            Layout.bottomMargin: 6
-            spacing: 7
+            Layout.leftMargin: 7
+            Layout.rightMargin: 7
+            Layout.bottomMargin: 3
+            spacing: 4
             visible: vpn.expanded
 
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 7
+                spacing: 5
                 Rectangle {
                     Layout.fillWidth: true
-                    implicitHeight: 40
-                    radius: 10
+                    implicitHeight: 32
+                    radius: 9
                     color: Colours.tPalette.m3surfaceContainerHighest
                     RowLayout {
                         anchors.fill: parent
-                        anchors.leftMargin: 10
-                        anchors.rightMargin: 9
-                        spacing: 7
-                        MaterialIcon {
-                            text: "public"
-                            fontStyle: Tokens.font.icon.small
-                            color: Colours.palette.m3onSurfaceVariant
-                        }
+                        anchors.leftMargin: 9
+                        anchors.rightMargin: 7
+                        spacing: 5
                         StyledText {
                             Layout.fillWidth: true
-                            text: vpn.countries.length ? vpn.countryName : qsTr("Choose country")
+                            text: vpn.countries.length ? vpn.countryName
+                                : vpn.browsing ? qsTr("Loading countries…") : qsTr("Choose country")
                             font: Tokens.font.body.small
                             color: Colours.palette.m3onSurface
                         }
                         MaterialIcon {
-                            text: vpn.showCountries ? "keyboard_arrow_up" : "keyboard_arrow_down"
+                            text: vpn.showCountries ? "expand_less" : "expand_more"
                             fontStyle: Tokens.font.icon.small
                             color: Colours.palette.m3onSurfaceVariant
                         }
@@ -1079,9 +1084,9 @@ Item {
                     }
                 }
                 Rectangle {
-                    width: 40
-                    height: 40
-                    radius: 10
+                    implicitWidth: 32
+                    implicitHeight: 32
+                    radius: 9
                     color: Colours.tPalette.m3surfaceContainerHighest
                     MaterialIcon {
                         anchors.centerIn: parent
@@ -1102,32 +1107,34 @@ Item {
             }
 
             ListView {
+                id: countryList
                 Layout.fillWidth: true
-                implicitHeight: vpn.showCountries ? Math.min(205, vpn.countries.length * 38) : 0
+                Layout.preferredHeight: vpn.showCountries ? Math.min(5, vpn.countries.length) * 30 : 0
                 visible: vpn.showCountries
                 clip: true
-                spacing: 2
+                interactive: vpn.countries.length > 5
+                boundsBehavior: Flickable.StopAtBounds
                 model: vpn.countries
                 delegate: Rectangle {
-                    id: countryItem
+                    id: countryRow
                     required property var modelData
-                    width: ListView.view ? ListView.view.width : 260
-                    height: 36
-                    radius: 9
-                    color: countryItem.modelData.code === vpn.countryCode
+                    width: countryList.width
+                    height: 30
+                    radius: 7
+                    color: countryRow.modelData.code === vpn.countryCode
                         ? Colours.tPalette.m3surfaceContainerHighest : "transparent"
                     RowLayout {
                         anchors.fill: parent
-                        anchors.leftMargin: 9
-                        anchors.rightMargin: 9
-                        spacing: 6
+                        anchors.leftMargin: 7
+                        anchors.rightMargin: 7
+                        spacing: 5
                         StyledText {
                             Layout.fillWidth: true
-                            text: countryItem.modelData.name
-                            font: Tokens.font.body.small
+                            text: countryRow.modelData.name
+                            font: Tokens.font.label.small
                         }
                         StyledText {
-                            text: countryItem.modelData.count
+                            text: countryRow.modelData.count
                             color: Colours.palette.m3onSurfaceVariant
                             font: Tokens.font.label.small
                         }
@@ -1136,14 +1143,14 @@ Item {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         enabled: !vpn.browsing
-                        onClicked: vpn.changeCountry(countryItem.modelData.code, countryItem.modelData.name)
+                        onClicked: vpn.changeCountry(countryRow.modelData.code, countryRow.modelData.name)
                     }
                 }
             }
 
             RowLayout {
                 Layout.fillWidth: true
-                visible: vpn.countries.length > 0 && vpn.servers.length > 0
+                spacing: 4
                 StyledText {
                     Layout.fillWidth: true
                     text: qsTr("Servers")
@@ -1151,136 +1158,114 @@ Item {
                     color: Colours.palette.m3onSurfaceVariant
                 }
                 StyledText {
-                    text: qsTr("%1 available").arg(vpn.countries.find(c => c.code === vpn.countryCode)?.count || vpn.servers.length)
+                    text: qsTr("%1 · fastest first").arg(vpn.servers.length || vpn.countries.find(c => c.code === vpn.countryCode)?.count || 0)
                     font: Tokens.font.label.small
                     color: Colours.palette.m3onSurfaceVariant
                 }
             }
 
-            Repeater {
-                model: vpn.showAllServers ? vpn.servers : vpn.servers.slice(0, 3)
+            ListView {
+                id: serverList
+                Layout.fillWidth: true
+                readonly property int rowHeight: 34
+                Layout.preferredHeight: Math.min(3, vpn.servers.length) * rowHeight
+                implicitHeight: Math.min(3, vpn.servers.length) * rowHeight
+                visible: vpn.servers.length > 0
+                clip: true
+                interactive: vpn.servers.length > 3
+                boundsBehavior: Flickable.StopAtBounds
+                flickableDirection: Flickable.VerticalFlick
+                model: vpn.servers
                 delegate: Rectangle {
-                    id: relayItem
+                    id: relayRow
                     required property var modelData
                     required property int index
-                    Layout.fillWidth: true
-                    implicitHeight: 42
-                    radius: 9
-                    readonly property bool selected: vpn.selectedId === relayItem.modelData.id
-                    color: relayItem.selected ? Colours.tPalette.m3surfaceContainerHighest : "transparent"
+                    width: serverList.width
+                    height: serverList.rowHeight
+                    radius: 8
+                    readonly property bool selected: vpn.selectedId === relayRow.modelData.id
+                    color: relayRow.selected ? Colours.tPalette.m3surfaceContainerHighest : "transparent"
                     RowLayout {
                         anchors.fill: parent
-                        anchors.leftMargin: 10
-                        anchors.rightMargin: 10
-                        spacing: 8
+                        anchors.leftMargin: 9
+                        anchors.rightMargin: 9
+                        spacing: 6
                         MaterialIcon {
-                            text: relayItem.selected ? "radio_button_checked" : "radio_button_unchecked"
+                            text: relayRow.selected ? "radio_button_checked" : "radio_button_unchecked"
                             fontStyle: Tokens.font.icon.small
-                            color: relayItem.selected ? "#43a047" : Colours.palette.m3onSurfaceVariant
+                            color: relayRow.selected ? "#43a047" : Colours.palette.m3onSurfaceVariant
                         }
                         StyledText {
                             Layout.fillWidth: true
-                            text: qsTr("Server %1").arg(relayItem.index + 1)
-                            font: Tokens.font.body.small
+                            text: qsTr("Server %1").arg(relayRow.index + 1)
+                            font: Tokens.font.label.small
                         }
                         StyledText {
-                            text: relayItem.modelData.mbps.toFixed(1) + " Mb/s"
+                            text: relayRow.modelData.mbps.toFixed(1) + " Mb/s"
                             font: Tokens.font.label.small
                             color: Colours.palette.m3onSurfaceVariant
                         }
                     }
                     MouseArea {
                         anchors.fill: parent
-                        enabled: !vpn.connected
+                        enabled: !vpn.connected && !vpn.working
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: vpn.selectedId = relayItem.modelData.id
+                        onClicked: vpn.selectedId = relayRow.modelData.id
                     }
                 }
             }
 
-            StyledText {
-                Layout.alignment: Qt.AlignRight
-                visible: vpn.servers.length > 3
-                text: vpn.showAllServers ? qsTr("Less") : qsTr("All servers")
-                font: Tokens.font.label.small
-                color: Colours.palette.m3onSurfaceVariant
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: vpn.showAllServers = !vpn.showAllServers
-                }
-            }
-
-            Rectangle {
+            RowLayout {
                 Layout.fillWidth: true
-                implicitHeight: 40
-                radius: 11
-                color: vpn.connected ? Colours.tPalette.m3surfaceContainerHighest : Colours.palette.m3onSurface
-                opacity: vpn.working || (!vpn.connected && !vpn.selectedId) ? 0.55 : 1
-                RowLayout {
-                    anchors.centerIn: parent
-                    spacing: 7
-                    MaterialIcon {
-                        text: vpn.connected ? "power_settings_new" : "vpn_lock"
-                        fontStyle: Tokens.font.icon.small
-                        color: vpn.connected ? Colours.palette.m3onSurface : Colours.palette.m3surface
+                spacing: 5
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 34
+                    radius: 9
+                    color: vpn.connected ? Colours.tPalette.m3surfaceContainerHighest : Colours.palette.m3onSurface
+                    opacity: vpn.working || (!vpn.connected && (!vpn.selectedId || vpn.tailscaleExitActive)) ? 0.58 : 1
+                    RowLayout {
+                        anchors.centerIn: parent
+                        spacing: 6
+                        MaterialIcon {
+                            text: vpn.connected ? "power_settings_new" : "vpn_lock"
+                            fontStyle: Tokens.font.icon.small
+                            color: vpn.connected ? Colours.palette.m3onSurface : Colours.palette.m3surface
+                        }
+                        StyledText {
+                            text: vpn.working
+                                ? vpn.actionName === "verify" ? qsTr("Checking IP…")
+                                : vpn.actionName === "disconnect" ? qsTr("Disconnecting…") : qsTr("Connecting…")
+                                : vpn.connected ? qsTr("Disconnect · %1").arg(vpn.countryName)
+                                : vpn.tailscaleExitActive ? qsTr("Route → Direct first")
+                                : !vpn.selectedId ? qsTr("Select a server")
+                                : qsTr("Connect · %1").arg(vpn.countryName)
+                            font: Tokens.font.label.small
+                            color: vpn.connected ? Colours.palette.m3onSurface : Colours.palette.m3surface
+                        }
                     }
-                    StyledText {
-                        text: vpn.working ? qsTr("Connecting…") :
-                              vpn.connected ? qsTr("Disconnect") : qsTr("Connect")
-                        font: Tokens.font.body.small
-                        color: vpn.connected ? Colours.palette.m3onSurface : Colours.palette.m3surface
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !vpn.working && (vpn.connected || (!!vpn.selectedId && !vpn.tailscaleExitActive))
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: vpn.action(vpn.connected ? "disconnect" : "connect")
                     }
                 }
-                MouseArea {
-                    anchors.fill: parent
-                    enabled: !vpn.working && (vpn.connected || !!vpn.selectedId)
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: vpn.action(vpn.connected ? "disconnect" : "connect")
-                }
-            }
-
-            StyledText {
-                Layout.fillWidth: true
-                visible: vpn.tailscaleExitActive && !vpn.connected
-                text: qsTr("Switch Route to Direct before connecting")
-                font: Tokens.font.label.small
-                color: "#b78720"
-                wrapMode: Text.Wrap
-            }
-            StyledText {
-                Layout.fillWidth: true
-                visible: vpn.browsing
-                text: qsTr("Loading locations…")
-                font: Tokens.font.label.small
-                color: Colours.palette.m3onSurfaceVariant
-            }
-            StyledText {
-                Layout.fillWidth: true
-                visible: vpn.connected && !vpn.working
-                text: qsTr("Check exit IP")
-                font: Tokens.font.label.small
-                color: Colours.palette.m3onSurfaceVariant
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
+                ActionButton {
+                    visible: vpn.connected
+                    icon: "travel_explore"
+                    hint: vpn.verifiedExit ? qsTr("Verified exit: %1").arg(vpn.verifiedExit)
+                        : qsTr("Verify exit IP")
                     onClicked: vpn.action("verify")
                 }
             }
-            StyledText {
-                Layout.fillWidth: true
-                visible: vpn.infoText.length > 0 && !vpn.browsing
-                text: vpn.infoText
-                font: Tokens.font.label.small
-                color: Colours.palette.m3onSurfaceVariant
-                wrapMode: Text.Wrap
-            }
+
             StyledText {
                 Layout.fillWidth: true
                 visible: vpn.errorText.length > 0
                 text: vpn.errorText
-                font: Tokens.font.label.small
                 color: Colours.palette.m3error
+                font: Tokens.font.label.small
                 wrapMode: Text.Wrap
             }
         }
@@ -1400,7 +1385,8 @@ Item {
                 spacing: 2
 
                 StyledText {
-                    text: RemoteDesktop.RemoteStatus.exitNodeActive
+                    text: root.vpnConnected ? root.vpnExitCountry
+                        : RemoteDesktop.RemoteStatus.exitNodeActive
                         ? RemoteDesktop.RemoteStatus.exitNodeName
                         : qsTr("Direct")
                     color: Colours.palette.m3onSurfaceVariant
@@ -1437,7 +1423,18 @@ Item {
                 items: root.exitMenuItems
                 active: null
                 onItemSelected: item => {
-                    RemoteDesktop.RemoteStatus.setExitNode(item.nodeId);
+                    if (root.vpnConnected) {
+                        // The Route row reports the effective exit, including
+                        // VPN Gate, not just the Tailscale selection.
+                        if (!item.nodeId)
+                            vpnPanel.action("disconnect");
+                        else {
+                            vpnPanel.expanded = true;
+                            vpnPanel.errorText = qsTr("Disconnect VPN before choosing a Tailscale exit node.");
+                        }
+                    } else {
+                        RemoteDesktop.RemoteStatus.setExitNode(item.nodeId);
+                    }
                     Qt.callLater(() => routeMenu.active = null);
                 }
             }
@@ -1458,6 +1455,7 @@ Item {
 
     // Separate from the existing Tailscale Route/MCP tunnel controls.
     VpnRoutePanel {
+        id: vpnPanel
         Layout.fillWidth: true
         Layout.leftMargin: Tokens.padding.extraSmall
         Layout.rightMargin: Tokens.padding.extraSmall

@@ -58,6 +58,13 @@ class VpnGateTests(unittest.TestCase):
         self.assertTrue(re.search(r"Connection ['‘](.+?)['’] \(",
                                   "Connection 'selected' (abcd)"))
 
+    def test_country_labels_are_readable_even_from_old_cache(self):
+        self.assertEqual(script.display_country("KR", "Korea Republic of"), "South Korea")
+        self.assertEqual(script.display_country("HR", "Croatia (LOCAL Name Hrvatska)"), "Croatia")
+        self.assertEqual(script.display_country("VN", "Viet Nam"), "Vietnam")
+        rows = [{"country":"RU","countryName":"Russian Federation"}]
+        self.assertEqual(script.country_options(rows)[0]["name"], "Russia")
+
     def test_country_code_is_validated(self):
         with self.assertRaises(script.RouteError):
             script.relay_options([], "../JP")

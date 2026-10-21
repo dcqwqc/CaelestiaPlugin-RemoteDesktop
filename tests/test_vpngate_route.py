@@ -28,7 +28,7 @@ Zm9v
 
 
 class VpnGateTests(unittest.TestCase):
-    def test_only_japan_relay_is_listed(self):
+    def test_all_countries_are_listed_and_filtered_on_demand(self):
         keys = ["HostName", "IP", "CountryShort", "Score", "Speed", "Ping",
                 "NumVpnSessions", "OpenVPN_ConfigData_Base64"]
         def row(ip, country, score):
@@ -41,8 +41,41 @@ class VpnGateTests(unittest.TestCase):
         w.writerow(row("203.0.113.13", "JP", 200))
         csv_data = "#" + ",".join(keys) + "\n" + f.getvalue()
         rows = script.filtered_rows(csv_data)
-        self.assertEqual([x["ip"] for x in rows], ["203.0.113.13", "203.0.113.11"])
+        self.assertEqual([x["ip"] for x in rows],
+                         ["203.0.113.12", "203.0.113.13", "203.0.113.11"])
+        self.assertEqual(script.relay_options(rows, "US")[0]["ip"], "203.0.113.12")
+        self.assertEqual([r["ip"] for r in script.relay_options(rows, "JP")],
+                         ["203.0.113.13", "203.0.113.11"])
+        self.assertEqual([(c["code"], c["count"]) for c in script.country_options(rows)],
+                         [("JP", 2), ("US", 1)])
         self.assertEqual(rows[0]["mbps"], 54.0)
+
+    def test_import_response_regex_is_valid(self):
+        import re
+        import inspect
+        body = inspect.getsource(script.connect)
+        self.assertIn('match = re.search', body)
+        self.assertTrue(re.search(r"Connection ['‘](.+?)['’] \(",
+                                  "Connection 'selected' (abcd)"))
+
+    def test_country_code_is_validated(self):
+        with self.assertRaises(script.RouteError):
+            script.relay_options([], "../JP")
+        self.assertEqual(script.relay_options([], "DE"), [])
+
+    def test_saved_cache_keeps_all_countries_without_fetch(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)/"cache.json"
+            rows = [{"country":"DE","countryName":"Germany","id":"a","ip":"203.0.113.3"},
+                    {"country":"US","countryName":"United States","id":"b","ip":"203.0.113.4"}]
+            script.put_json.__globals__["STATE"] = Path(td)
+            script.put_json(p, {"time":0, "servers":rows})
+            from unittest.mock import patch
+            with patch.object(script,"CACHE",p), patch.object(script,"run",side_effect=AssertionError("network fetch")):
+                loaded, stale = script.directory()
+            self.assertEqual(loaded,rows)
+            self.assertTrue(stale)
 
     def test_strip_remote_options_and_ignore_setenv(self):
         ovpn = sample(extra='setenv bypassscript security\nverb 11\npersist-tun')

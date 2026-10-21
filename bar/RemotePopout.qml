@@ -22,6 +22,10 @@ Item {
     property bool vpnConnected: false
     property string vpnExitCountry: ""
 
+    // Single horizontal inset for every primary section in the Devices tab.
+    // Nested detail rows retain their left indent but have no extra right inset.
+    readonly property real horizontalInset: Tokens.padding.small
+
     implicitWidth: 304
     // Keep the bar popout within a small/rotated display; expanding several
     // peers scrolls inside the panel rather than pushing it off screen.
@@ -428,8 +432,8 @@ Item {
         // No status words: the dot is the only at-a-glance health indicator.
 
         Layout.fillWidth: true
-        Layout.leftMargin: Tokens.padding.small
-        Layout.rightMargin: Tokens.padding.small
+        Layout.leftMargin: root.horizontalInset
+        Layout.rightMargin: root.horizontalInset
         Layout.topMargin: Tokens.padding.extraSmall
         Layout.bottomMargin: Tokens.padding.extraSmall
         spacing: Tokens.spacing.extraSmall
@@ -625,7 +629,7 @@ Item {
         StyledText {
             Layout.fillWidth: true
             Layout.leftMargin: Tokens.padding.large
-            Layout.rightMargin: Tokens.padding.extraSmall
+            Layout.rightMargin: 0
             visible: hostRow.health !== "reachable" && hostRow.expanded
             text: hostRow.isHeadset
                 ? qsTr("Not reachable over ADB · plug in USB once to enable wireless")
@@ -639,7 +643,7 @@ Item {
         StyledText {
             Layout.fillWidth: true
             Layout.leftMargin: Tokens.padding.large
-            Layout.rightMargin: Tokens.padding.small
+            Layout.rightMargin: 0
             visible: hostRow.expanded && !hostRow.isSelf && !!root.transferTarget(hostRow.device)
             text: qsTr("Drop files on this device's name to send to ~/Received Files")
             color: Colours.palette.m3onSurfaceVariant
@@ -650,7 +654,7 @@ Item {
         StyledText {
             Layout.fillWidth: true
             Layout.leftMargin: Tokens.padding.large
-            Layout.rightMargin: Tokens.padding.small
+            Layout.rightMargin: 0
             visible: root.transferHostId === String(hostRow.device.id) && root.transferFeedback.length > 0
             text: root.transferFeedback
             color: Colours.palette.m3primary
@@ -662,7 +666,7 @@ Item {
         StyledText {
             Layout.fillWidth: true
             Layout.leftMargin: Tokens.padding.large
-            Layout.rightMargin: Tokens.padding.extraSmall
+            Layout.rightMargin: 0
             visible: !hostRow.isSelf && hostRow.expanded && hostRow.health === "reachable"
             text: hostRow.isHeadset
                 ? (root.questMirrorTransport === "usb" ? qsTr("ADB over USB") : qsTr("ADB over network"))
@@ -679,7 +683,7 @@ Item {
             // host explicitly so it cannot be confused with the Quest peer.
             Layout.fillWidth: true
             Layout.leftMargin: 36
-            Layout.rightMargin: Tokens.padding.extraSmall
+            Layout.rightMargin: 0
             active: hostRow.isSelf && Quest.QuestSession.available
             visible: active
             sourceComponent: HeadsetDesktop { hostLabel: root.deviceName(hostRow.device) }
@@ -1044,8 +1048,8 @@ Item {
 
         ColumnLayout {
             Layout.fillWidth: true
-            Layout.leftMargin: 7
-            Layout.rightMargin: 7
+            // The parent VPN section already has the shared horizontal inset.
+            // No second inset here: country, servers and connect share edges.
             Layout.bottomMargin: 3
             spacing: 4
             visible: vpn.expanded
@@ -1158,7 +1162,7 @@ Item {
                     color: Colours.palette.m3onSurfaceVariant
                 }
                 StyledText {
-                    text: qsTr("%1 · fastest first").arg(vpn.servers.length || vpn.countries.find(c => c.code === vpn.countryCode)?.count || 0)
+                    text: qsTr("%1 available").arg(vpn.servers.length || vpn.countries.find(c => c.code === vpn.countryCode)?.count || 0)
                     font: Tokens.font.label.small
                     color: Colours.palette.m3onSurfaceVariant
                 }
@@ -1287,8 +1291,8 @@ Item {
     RowLayout {
         Layout.fillWidth: true
         Layout.topMargin: Tokens.padding.extraSmall
-        Layout.leftMargin: Tokens.padding.extraSmall
-        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.leftMargin: root.horizontalInset
+        Layout.rightMargin: root.horizontalInset
         spacing: Tokens.spacing.extraSmall
 
         StyledText {
@@ -1317,8 +1321,8 @@ Item {
 
     RowLayout {
         Layout.fillWidth: true
-        Layout.leftMargin: Tokens.padding.extraSmall
-        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.leftMargin: root.horizontalInset
+        Layout.rightMargin: root.horizontalInset
         Layout.topMargin: 0
         spacing: Tokens.spacing.extraSmall
 
@@ -1353,8 +1357,8 @@ Item {
 
     RowLayout {
         Layout.fillWidth: true
-        Layout.leftMargin: Tokens.padding.extraSmall
-        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.leftMargin: root.horizontalInset
+        Layout.rightMargin: root.horizontalInset
         Layout.topMargin: 0
         Layout.bottomMargin: Tokens.padding.extraSmall
         spacing: Tokens.spacing.extraSmall
@@ -1443,8 +1447,8 @@ Item {
 
     StyledText {
         Layout.fillWidth: true
-        Layout.leftMargin: Tokens.padding.extraSmall + Tokens.padding.large
-        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.leftMargin: root.horizontalInset
+        Layout.rightMargin: root.horizontalInset
         Layout.bottomMargin: Tokens.padding.extraSmall
         visible: RemoteDesktop.RemoteStatus.exitNodeError.length > 0
         text: RemoteDesktop.RemoteStatus.exitNodeError
@@ -1457,8 +1461,8 @@ Item {
     VpnRoutePanel {
         id: vpnPanel
         Layout.fillWidth: true
-        Layout.leftMargin: Tokens.padding.extraSmall
-        Layout.rightMargin: Tokens.padding.extraSmall
+        Layout.leftMargin: root.horizontalInset
+        Layout.rightMargin: root.horizontalInset
     }
 
         } // deviceContent

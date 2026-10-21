@@ -962,6 +962,13 @@ Item {
         font: Tokens.font.label.small
     }
 
+    // Separate from the existing Tailscale Route/MCP tunnel controls.
+    VpnRoutePanel {
+        Layout.fillWidth: true
+        Layout.leftMargin: Tokens.padding.extraSmall
+        Layout.rightMargin: Tokens.padding.extraSmall
+    }
+
         } // deviceContent
     } // Flickable
 }

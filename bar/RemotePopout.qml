@@ -25,6 +25,10 @@ Item {
     readonly property real horizontalInset: Tokens.padding.small
     readonly property real leadingIconWidth: 28
     readonly property real rowSpacing: Tokens.spacing.small
+    readonly property real devicePaneWidth: 304
+    readonly property real routePaneWidth: 306
+    readonly property bool routeCanExpandRight:
+        (Quickshell.screens.length > 0 ? Quickshell.screens[0].width : 1200) >= 720
     property bool routeExpanded: false
     property string routePage: "routes"
     readonly property bool routeBusy: vpnPanel.working || vpnPanel.routePending
@@ -33,14 +37,22 @@ Item {
         && vpnPanel.verifiedCountryCode === vpnPanel.countryCode
 
     function openRoutePage(page): void {
-        routePage = page;
+        routePage = page === "countries" ? "routes" : page;
         routeExpanded = true;
-        vpnPanel.quickPicker = page === "countries";
-        vpnPanel.expanded = page === "servers";
-        if (page !== "routes" && !vpnPanel.countries.length && !vpnPanel.browsing)
+        vpnPanel.quickPicker = false;
+        vpnPanel.expanded = routePage === "servers";
+        if (!vpnPanel.countries.length && !vpnPanel.browsing)
             vpnPanel.browse("countries", "");
-        else if (page === "servers" && !vpnPanel.servers.length && !vpnPanel.browsing)
+        else if (routePage === "servers" && !vpnPanel.servers.length && !vpnPanel.browsing)
             vpnPanel.browse("servers", vpnPanel.countryCode);
+    }
+
+    function countryFlag(code): string {
+        const str = String(code || "").toUpperCase();
+        if (!/^[A-Z]{2}$/.test(str))
+            return "🌐";
+        return String.fromCodePoint(127397 + str.charCodeAt(0),
+                                    127397 + str.charCodeAt(1));
     }
 
     function selectRoute(nodeId): void {
@@ -66,14 +78,17 @@ Item {
             vpnPanel.quickPicker = false;
             vpnPanel.expanded = false;
             vpnPanel.readStatus();
+            if (!vpnPanel.countries.length && !vpnPanel.browsing)
+                vpnPanel.browse("countries", "");
         }
     }
 
-    implicitWidth: 304
+    implicitWidth: routeExpanded && routeCanExpandRight
+        ? devicePaneWidth + routePaneWidth : devicePaneWidth
     // Keep the bar popout within a small/rotated display; expanding several
     // peers scrolls inside the panel rather than pushing it off screen.
     implicitHeight: Math.min(
-        Math.max(deviceContent.implicitHeight, routeExpanded ? 376 : 0),
+        Math.max(deviceContent.implicitHeight, routeExpanded ? 420 : 0),
         maxPanelHeight)
     readonly property real maxPanelHeight: Math.max(220,
         Math.min(680, (Quickshell.screens.length > 0 ? Quickshell.screens[0].height : 900) - 96))
@@ -392,6 +407,7 @@ Item {
         required property string title
         property bool selected: false
         property bool available: true
+        property string icon: "public"
         signal chosen()
         Layout.fillWidth: true
         implicitHeight: 30
@@ -401,6 +417,11 @@ Item {
             anchors.leftMargin: 6
             anchors.rightMargin: 3
             spacing: Tokens.spacing.small
+            MaterialIcon {
+                text: routeChoice.icon
+                fontStyle: Tokens.font.icon.small
+                color: Colours.palette.m3onSurfaceVariant
+            }
             StyledText {
                 Layout.fillWidth: true
                 text: routeChoice.title
@@ -1451,7 +1472,11 @@ Item {
 
     Flickable {
         id: deviceScroller
-        anchors.fill: parent
+        x: 0
+        y: 0
+        width: root.devicePaneWidth
+        height: root.height
+        visible: !root.routeExpanded || root.routeCanExpandRight
         clip: true
         flickableDirection: Flickable.VerticalFlick
         boundsBehavior: Flickable.StopAtBounds
@@ -1626,44 +1651,41 @@ Item {
         } // deviceContent
     } // Flickable
 
-    // Fixed-size floating route switcher. It does not reflow device rows.
-    MouseArea {
-        anchors.fill: parent
-        visible: root.routeExpanded
-        enabled: root.routeExpanded
-        z: 90
-        onClicked: root.routeExpanded = false
-    }
-
-    Rectangle {
+    // The bar host already animates to this plugin's implicitWidth.
+    // Present routing as an attached second pane, not a nested popup/overlay.
+    Item {
         id: routeFlyout
         visible: root.routeExpanded
-        z: 91
-        x: 4
-        y: Math.max(4, root.height - height - 4)
-        width: root.width - 8
-        height: Math.min(356, root.height - 8)
-        radius: 13
-        color: Colours.palette.m3surface
-        border.width: 1
-        border.color: Colours.palette.m3outlineVariant
+        x: root.routeCanExpandRight ? root.devicePaneWidth : 0
+        y: 0
+        width: root.routeCanExpandRight ? root.routePaneWidth : root.devicePaneWidth
+        height: root.height
         clip: true
+        z: 2
 
-        MouseArea {
-            anchors.fill: parent
-            onClicked: {} // Consume inside clicks without dismissing.
+        Rectangle {
+            visible: root.routeCanExpandRight
+            width: 1
+            height: parent.height
+            color: Colours.palette.m3outlineVariant
+            opacity: 0.55
         }
+
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 12
-            spacing: 8
+            anchors.leftMargin: 14
+            anchors.rightMargin: 14
+            anchors.topMargin: 12
+            anchors.bottomMargin: 12
+            spacing: 7
+
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 6
+                spacing: 8
                 Item {
                     implicitWidth: 26
                     implicitHeight: 26
-                    visible: root.routePage !== "routes"
+                    visible: root.routePage === "servers"
                     MaterialIcon {
                         anchors.centerIn: parent
                         text: "arrow_back"
@@ -1673,18 +1695,23 @@ Item {
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: root.openRoutePage(root.routePage === "servers" ? "countries" : "routes")
+                        onClicked: root.openRoutePage("routes")
                     }
+                }
+                MaterialIcon {
+                    visible: root.routePage !== "servers"
+                    text: "route"
+                    fontStyle: Tokens.font.icon.small
+                    color: Colours.palette.m3onSurfaceVariant
                 }
                 StyledText {
                     Layout.fillWidth: true
-                    text: root.routePage === "countries" ? qsTr("Choose country")
-                        : root.routePage === "servers" ? qsTr("VPN options") : qsTr("Route")
+                    text: root.routePage === "servers" ? qsTr("Manual servers") : qsTr("Route")
                     font: Tokens.font.body.builders.medium.weight(Font.Medium).build()
                 }
                 Item {
-                    implicitWidth: 26
-                    implicitHeight: 26
+                    implicitWidth: 28
+                    implicitHeight: 28
                     MaterialIcon {
                         anchors.centerIn: parent
                         text: "close"
@@ -1705,128 +1732,207 @@ Item {
                 opacity: 0.5
             }
 
-            Flickable {
-                id: primaryRouteList
+            ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: root.routePage === "routes"
-                clip: true
-                boundsBehavior: Flickable.StopAtBounds
-                contentHeight: primaryRouteChoices.implicitHeight
-                contentWidth: width
+                spacing: 4
+                visible: root.routePage !== "servers"
 
-                ColumnLayout {
-                    id: primaryRouteChoices
-                    width: primaryRouteList.width
-                    spacing: 2
-                    RouteChoice {
-                        title: qsTr("Direct")
+                RouteChoice {
+                    title: qsTr("Direct")
+                    icon: "public"
+                    selected: !vpnPanel.connected
+                        && !RemoteDesktop.RemoteStatus.exitNodeActive && !root.routeBusy
+                    available: !root.routeBusy
+                    onChosen: root.selectRoute("")
+                }
+
+                Repeater {
+                    model: RemoteDesktop.RemoteStatus.exitNodes
+                    delegate: RouteChoice {
+                        required property var modelData
+                        title: modelData.name
+                        icon: "router"
                         selected: !vpnPanel.connected
-                            && !RemoteDesktop.RemoteStatus.exitNodeActive
+                            && RemoteDesktop.RemoteStatus.exitNodeId === modelData.id
                             && !root.routeBusy
-                        available: !root.routeBusy
-                        onChosen: root.selectRoute("")
+                        available: !!modelData.online && !root.routeBusy
+                        onChosen: root.selectRoute(modelData.id)
                     }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 6
+                    height: 1
+                    color: Colours.palette.m3outlineVariant
+                    opacity: 0.5
+                }
+                RowLayout {
+                    Layout.fillWidth: true
                     StyledText {
-                        text: qsTr("Tailscale")
-                        font: Tokens.font.label.small
+                        Layout.fillWidth: true
+                        text: qsTr("VPN countries")
                         color: Colours.palette.m3onSurfaceVariant
-                        Layout.topMargin: 6
+                        font: Tokens.font.label.small
                     }
-                    Repeater {
-                        model: RemoteDesktop.RemoteStatus.exitNodes
-                        delegate: RouteChoice {
-                            required property var modelData
-                            title: modelData.name
-                            selected: !vpnPanel.connected
-                                && RemoteDesktop.RemoteStatus.exitNodeId === modelData.id
-                                && !root.routeBusy
-                            available: !!modelData.online && !root.routeBusy
-                            onChosen: root.selectRoute(modelData.id)
+                    Item {
+                        implicitWidth: 28
+                        implicitHeight: 28
+                        MaterialIcon {
+                            anchors.centerIn: parent
+                            text: "tune"
+                            fontStyle: Tokens.font.icon.small
+                            color: Colours.palette.m3onSurfaceVariant
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.openRoutePage("servers")
                         }
                     }
-                    StyledText {
-                        visible: RemoteDesktop.RemoteStatus.exitNodes.length === 0
-                        text: qsTr("No Tailscale exits available")
-                        font: Tokens.font.label.small
-                        color: Colours.palette.m3onSurfaceVariant
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 32
+                    radius: 8
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Colours.palette.m3outlineVariant
+                    StyledTextField {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        placeholderText: qsTr("Search countries")
+                        text: vpnPanel.countrySearch
+                        onTextChanged: vpnPanel.countrySearch = text
                     }
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.topMargin: 7
-                        height: 1
-                        color: Colours.palette.m3outlineVariant
-                        opacity: 0.5
-                    }
-                    RouteChoice {
-                        title: vpnPanel.connected
-                            ? qsTr("Disconnect VPN")
-                            : qsTr("Recent · %1").arg(vpnPanel.countryName)
-                        available: !root.routeBusy && (vpnPanel.connected || !!vpnPanel.countryCode)
-                        onChosen: {
-                            if (vpnPanel.connected)
-                                vpnPanel.action("disconnect");
-                            else {
-                                root.openRoutePage("countries");
-                                vpnPanel.quickConnectCountry(vpnPanel.countryCode, vpnPanel.countryName);
+                }
+                StyledText {
+                    Layout.fillWidth: true
+                    visible: vpnPanel.browsing && vpnPanel.countries.length === 0
+                    text: qsTr("Loading countries…")
+                    font: Tokens.font.label.small
+                    color: Colours.palette.m3onSurfaceVariant
+                }
+                StyledText {
+                    Layout.fillWidth: true
+                    visible: !vpnPanel.browsing && vpnPanel.filteredCountries.length === 0
+                    text: qsTr("No VPN relays currently listed for this search")
+                    font: Tokens.font.label.small
+                    color: Colours.palette.m3onSurfaceVariant
+                    wrapMode: Text.WordWrap
+                }
+
+                ListView {
+                    id: allCountryList
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    interactive: contentHeight > height
+                    model: vpnPanel.filteredCountries
+                    delegate: Item {
+                        id: countryOption
+                        required property var modelData
+                        width: allCountryList.width
+                        height: 34
+                        readonly property bool activeExit: root.vpnVerified
+                            && countryOption.modelData.code === vpnPanel.countryCode
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 6
+                            anchors.rightMargin: 5
+                            spacing: 9
+                            StyledText {
+                                text: root.countryFlag(countryOption.modelData.code)
+                                font.pixelSize: 17
+                            }
+                            StyledText {
+                                Layout.fillWidth: true
+                                text: countryOption.modelData.name
+                                font: Tokens.font.body.small
+                                elide: Text.ElideRight
+                            }
+                            MaterialIcon {
+                                visible: countryOption.activeExit
+                                text: "check"
+                                fontStyle: Tokens.font.icon.small
                             }
                         }
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: !root.routeBusy && !vpnPanel.browsing
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: vpnPanel.quickConnectCountry(
+                                countryOption.modelData.code, countryOption.modelData.name)
+                        }
                     }
-                    RouteChoice {
-                        title: qsTr("Choose VPN country")
-                        available: !root.routeBusy
-                        onChosen: root.openRoutePage("countries")
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: vpnPanel.connected || vpnPanel.working
+                        || vpnPanel.routePending || vpnPanel.awaitingDirect
+                        || vpnPanel.errorText.length > 0
+                    StyledText {
+                        Layout.fillWidth: true
+                        text: vpnPanel.errorText.length ? vpnPanel.errorText
+                            : vpnPanel.routePending ? qsTr("Switching to Direct…")
+                            : vpnPanel.working ? qsTr("Connecting / verifying…")
+                            : vpnPanel.connected ? root.vpnVerified
+                                ? qsTr("VPN connected and verified")
+                                : qsTr("VPN connected · verifying")
+                            : qsTr("Direct route needed")
+                        color: vpnPanel.errorText.length ? Colours.palette.m3error
+                            : Colours.palette.m3onSurfaceVariant
+                        font: Tokens.font.label.small
+                        wrapMode: Text.Wrap
                     }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 33
+                    radius: 9
+                    visible: vpnPanel.awaitingDirect && !vpnPanel.connected
+                    color: Colours.palette.m3onSurface
+                    opacity: vpnPanel.routePending ? 0.6 : 1
+                    StyledText {
+                        anchors.centerIn: parent
+                        text: vpnPanel.routePending ? qsTr("Switching…")
+                            : qsTr("Switch to Direct & Connect")
+                        font: Tokens.font.label.small
+                        color: Colours.palette.m3surface
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !vpnPanel.routePending
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: vpnPanel.connectOrPrepare()
+                    }
+                }
+                RouteChoice {
+                    visible: vpnPanel.connected
+                    title: qsTr("Disconnect VPN")
+                    icon: "power_settings_new"
+                    available: !root.routeBusy
+                    onChosen: vpnPanel.connectOrPrepare()
                 }
             }
 
             Flickable {
-                id: vpnPages
+                id: advancedServers
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: root.routePage !== "routes"
+                visible: root.routePage === "servers"
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
                 contentWidth: width
                 contentHeight: vpnPanel.implicitHeight
                 VpnRoutePanel {
                     id: vpnPanel
-                    width: vpnPages.width
-                }
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                visible: root.routePage === "countries" || root.routePage === "servers"
-                StyledText {
-                    Layout.fillWidth: true
-                    text: vpnPanel.routePending ? qsTr("Switching to Direct…")
-                        : vpnPanel.working ? qsTr("Connecting / verifying…")
-                        : vpnPanel.connected ? root.vpnVerified
-                            ? qsTr("Connected · verified") : qsTr("VPN not yet verified")
-                        : vpnPanel.awaitingDirect ? qsTr("Direct route required")
-                        : qsTr("Automatic server recommendation")
-                    color: vpnPanel.errorText ? Colours.palette.m3error : Colours.palette.m3onSurfaceVariant
-                    font: Tokens.font.label.small
-                    elide: Text.ElideRight
-                }
-                Item {
-                    implicitWidth: 30
-                    implicitHeight: 28
-                    visible: root.routePage === "countries"
-                    MaterialIcon {
-                        anchors.centerIn: parent
-                        text: "tune"
-                        fontStyle: Tokens.font.icon.small
-                        color: Colours.palette.m3onSurfaceVariant
-                    }
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.openRoutePage("servers")
-                    }
+                    width: advancedServers.width
                 }
             }
         }
     }
-
 }

@@ -42,7 +42,7 @@ class DevicePanelPolicyTests(unittest.TestCase):
 
     def test_long_content_scrolls_inside_screen_bound(self):
         self.assertIn('contentHeight: deviceContent.implicitHeight', POP)
-        self.assertIn('Math.max(deviceContent.implicitHeight, routeExpanded ? 376 : 0)', POP)
+        self.assertIn('Math.max(deviceContent.implicitHeight, routeExpanded ? 420 : 0)', POP)
         self.assertIn('clip: true', POP)
 
     def test_aggregate_reasons_have_valid_newline_separator(self):

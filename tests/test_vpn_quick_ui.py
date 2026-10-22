@@ -15,13 +15,13 @@ class VpnQuickUiTests(unittest.TestCase):
     def test_country_picker_and_advanced_in_one_dropdown(self):
         self.assertIn("id: quickCountryList", SRC)
         self.assertIn("id: serverList", SRC)
-        self.assertIn('title: qsTr("Choose VPN country")', SRC)
+        self.assertIn('text: qsTr("VPN countries")', SRC)
         self.assertIn(chr(111)+chr(110)+chr(67)+chr(108)+chr(105)+chr(99)+chr(107)+chr(101)+chr(100)+": root.openRoutePage("+chr(34)+"servers"+chr(34)+")", SRC)
-        self.assertIn("onClicked: vpn.quickConnectCountry(quickCountryRow.modelData.code, quickCountryRow.modelData.name)", SRC)
+        self.assertIn("onClicked: vpnPanel.quickConnectCountry(", SRC)
 
     def test_direct_tailscale_vpn_choices(self):
         self.assertIn('title: qsTr("Direct")', SRC)
-        self.assertIn('text: qsTr("Tailscale")', SRC)
+        self.assertIn('icon: "router"', SRC)
         self.assertIn("model: RemoteDesktop.RemoteStatus.exitNodes", SRC)
         self.assertIn("onChosen: root.selectRoute(modelData.id)", SRC)
         self.assertIn("RemoteDesktop.RemoteStatus.setExitNode(nodeId)", SRC)

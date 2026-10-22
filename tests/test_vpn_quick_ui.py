@@ -6,17 +6,17 @@ SRC=(Path(__file__).resolve().parents[1]/"bar/RemotePopout.qml").read_text()
 
 class VpnQuickUiTests(unittest.TestCase):
     def test_route_is_only_navigation_surface(self):
-        self.assertIn("vpnPanel.connected ? vpnPanel.countryName", SRC)
+        self.assertIn("vpnPanel.countryName", SRC)
         self.assertIn("onClicked: root.routeExpanded = !root.routeExpanded", SRC)
-        self.assertIn("id: routeDetails", SRC)
+        self.assertIn("id: routeFlyout", SRC)
         self.assertIn("visible: root.routeExpanded", SRC)
         self.assertEqual(SRC.count("id: vpnPanel"), 1)
 
     def test_country_picker_and_advanced_in_one_dropdown(self):
         self.assertIn("id: quickCountryList", SRC)
         self.assertIn("id: serverList", SRC)
-        self.assertIn('text: qsTr("VPN countries")', SRC)
-        self.assertIn("onClicked: vpnPanel.expanded = !vpnPanel.expanded", SRC)
+        self.assertIn('title: qsTr("Choose VPN country")', SRC)
+        self.assertIn(chr(111)+chr(110)+chr(67)+chr(108)+chr(105)+chr(99)+chr(107)+chr(101)+chr(100)+": root.openRoutePage("+chr(34)+"servers"+chr(34)+")", SRC)
         self.assertIn("onClicked: vpn.quickConnectCountry(quickCountryRow.modelData.code, quickCountryRow.modelData.name)", SRC)
 
     def test_direct_tailscale_vpn_choices(self):

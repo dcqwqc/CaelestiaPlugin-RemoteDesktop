@@ -42,7 +42,7 @@ class DevicePanelPolicyTests(unittest.TestCase):
 
     def test_long_content_scrolls_inside_screen_bound(self):
         self.assertIn('contentHeight: deviceContent.implicitHeight', POP)
-        self.assertIn('implicitHeight: Math.min(deviceContent.implicitHeight, maxPanelHeight)', POP)
+        self.assertIn('Math.max(deviceContent.implicitHeight, routeExpanded ? 376 : 0)', POP)
         self.assertIn('clip: true', POP)
 
     def test_aggregate_reasons_have_valid_newline_separator(self):
@@ -108,8 +108,8 @@ class DevicePanelPolicyTests(unittest.TestCase):
         self.assertIn('replaced by a real watchdog probe as', STATUS)
         self.assertIn('root.tunnelProbeTargets.length > 0)', STATUS)
 
-    def test_route_dropdown_is_inline_and_avoids_nested_menu_overlay(self):
-        self.assertIn("id: routeDetails", POP)
+    def test_route_dropdown_uses_fixed_floating_switcher(self):
+        self.assertIn("id: routeFlyout", POP)
         self.assertIn("visible: root.routeExpanded", POP)
         self.assertIn("onClicked: root.routeExpanded = !root.routeExpanded", POP)
         self.assertNotIn("id: routeMenu", POP)

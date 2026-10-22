@@ -9,7 +9,7 @@ QML = (ROOT / "bar/RemotePopout.qml").read_text()
 class DevicesPaddingTests(unittest.TestCase):
     def test_shared_content_inset(self):
         self.assertIn("readonly property real horizontalInset: Tokens.padding.small", QML)
-        self.assertGreaterEqual(QML.count("Layout.leftMargin: root.horizontalInset"), 6)
+        self.assertGreaterEqual(QML.count("Layout.leftMargin: root.horizontalInset"), 4)
         self.assertEqual(QML.count("Layout.leftMargin: root.horizontalInset"),
                          QML.count("Layout.rightMargin: root.horizontalInset"))
 
@@ -28,7 +28,7 @@ class DevicesPaddingTests(unittest.TestCase):
 
     def test_device_actions_and_routes_remain(self):
         self.assertIn("id: deviceContent", QML)
-        self.assertIn("vpnPanel.connected ? vpnPanel.countryName", QML)
+        self.assertIn("vpnPanel.countryName", QML)
         self.assertIn("RemoteDesktop.RemoteStatus.setExitNode(nodeId)", QML)
         self.assertIn("id: vpnPanel", QML)
 

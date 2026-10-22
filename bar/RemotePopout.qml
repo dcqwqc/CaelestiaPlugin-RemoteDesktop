@@ -388,6 +388,19 @@ Item {
 
         required property string hint
         property bool accent: false
+        property bool showHint: false
+
+        // Only explicitly opted-in buttons show tooltips in this narrow panel.
+        Loader {
+            active: btn.showHint
+            asynchronous: false
+            sourceComponent: Component {
+                Tooltip {
+                    target: btn
+                    text: btn.hint
+                }
+            }
+        }
 
         // Material Symbols Rounded in a circular, understated touch target.
         // Keep control dimensions constant as active state changes.
@@ -403,10 +416,6 @@ Item {
         inactiveOnColour: accent ? Colours.palette.m3primary : Colours.palette.m3onSurfaceVariant
         label.fill: accent ? 1 : 0
 
-        Tooltip {
-            target: btn
-            text: btn.hint
-        }
     }
 
     component HostRow: ColumnLayout {
@@ -1430,18 +1439,34 @@ Item {
             font: Tokens.font.body.builders.medium.weight(Font.Medium).build()
         }
 
+        // Tailscale's explicit recovery action is separate from safe refresh.
         ActionButton {
-            visible: RemoteDesktop.RemoteStatus.tailscaleBackend !== "Running"
-                && RemoteDesktop.RemoteStatus.tailscaleBackend !== "unknown"
-            icon: "sync_problem"
+            id: tailscaleRecoveryButton
+            visible: RemoteDesktop.RemoteStatus.tailscaleStatusChecked
+                && RemoteDesktop.RemoteStatus.tailscaleBackend !== "Running"
+            icon: RemoteDesktop.RemoteStatus.connectivityRepairing ? "hourglass_top" : "sync_problem"
+            accent: true
+            showHint: true
+            hint: qsTr("Start/restart Tailscale\nAuthorization required\nRemote sessions may briefly disconnect")
             disabled: RemoteDesktop.RemoteStatus.connectivityRepairing
-            hint: qsTr("Tailscale is offline — click to start or restart it. Requires authorization; remote sessions may briefly disconnect.")
             onClicked: RemoteDesktop.RemoteStatus.reconnectTailscale()
+
+            Rectangle {
+                width: 7
+                height: 7
+                radius: 3.5
+                anchors.top: parent.top
+                anchors.right: parent.right
+                color: "#d99a00"
+                border.width: 1
+                border.color: Colours.palette.m3surface
+            }
         }
 
         ActionButton {
             icon: "refresh"
-            hint: qsTr("Refresh connection status only. Safe: no services or VPN routes are changed.")
+            showHint: true
+            hint: qsTr("Refresh status only\nNo restarts or route changes")
             onClicked: RemoteDesktop.RemoteStatus.refreshNow()
         }
     }

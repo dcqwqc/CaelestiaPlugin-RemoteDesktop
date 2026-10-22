@@ -165,9 +165,9 @@ IconButton hit targets. From left to right on paired desktops:
 There is no duplicate global Share mouse & keyboard button. Existing
 per-device Wake, Phone/Quest and Disconnect actions remain. Active actions
 use a muted theme tint and rounded fill, inactive actions stay outlined.
-The button hint strings remain available to accessibility integrations,
-but pop-up tooltip overlays are intentionally disabled to keep the narrow
-Devices panel unobstructed.
+Most button hint strings remain available to accessibility integrations
+without pop-up overlays. The safe Refresh and offline-only Tailscale recovery
+buttons opt in to short multiline hover tooltips so the distinction is clear.
 
 Run python3 -m unittest discover -s tests -p 'test_*.py' before release.
 For production installations with uncommitted local plugin customizations,

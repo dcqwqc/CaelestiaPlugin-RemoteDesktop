@@ -45,6 +45,7 @@ Singleton {
     readonly property string sshProbeBin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/device-ssh-probe`
     property string tailscaleError: qsTr("Tailscale status has not completed its first check.")
     property string tailscaleBackend: "unknown"
+    property bool tailscaleStatusChecked: false
 
     function deviceHealth(device): string {
         if (tailscaleError.length > 0) return "unknown";
@@ -169,10 +170,13 @@ Singleton {
     }
 
     function reconnectTailscale(): void {
-        if (connectivityRepairing || connectivityRepairProc.running)
+        // Never restart a connection that recovered after the warning appeared.
+        if (!tailscaleStatusChecked || tailscaleBackend === "Running"
+                || connectivityRepairing || connectivityRepairProc.running)
             return;
         connectivityRepairing = true;
         connectivityRepairError = "";
+        connectivityRepairProc.stderrText = "";
         connectivityRepairProc.running = true;
     }
 
@@ -291,8 +295,11 @@ Singleton {
         property string stderrText: ""
         stderr: StdioCollector { onStreamFinished: tailscaleProc.stderrText = text.trim() }
         onExited: code => {
-            if (code !== 0)
+            root.tailscaleStatusChecked = true;
+            if (code !== 0) {
+                root.tailscaleBackend = "unknown";
                 root.tailscaleError = qsTr("tailscale status --json failed (exit %1): %2").arg(code).arg(stderrText || qsTr("no error output"));
+            }
         }
         stdout: StdioCollector {
             onStreamFinished: {

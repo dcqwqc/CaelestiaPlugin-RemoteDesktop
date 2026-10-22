@@ -87,9 +87,12 @@ class TailscaleRecoveryTests(unittest.TestCase):
         self.assertIn('node.ExitNodeOption', STATUS)
         self.assertIn('target: btn', PANEL)
         self.assertIn('text: btn.hint', PANEL)
+        self.assertIn('showHint: true', PANEL)
+        self.assertIn('if (!tailscaleStatusChecked || tailscaleBackend === "Running"', STATUS)
+        self.assertIn('color: "#d99a00"', PANEL)
         self.assertIn('tailscaleBackend !== "Running"', PANEL)
-        self.assertIn('tailscaleBackend !== "unknown"', PANEL)
-        self.assertIn('Refresh connection status only.', PANEL)
+        self.assertIn('tailscaleStatusChecked', PANEL)
+        self.assertIn('Refresh status only', PANEL)
 
 
 if __name__ == '__main__':

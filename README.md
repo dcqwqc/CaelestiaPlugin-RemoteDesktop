@@ -165,11 +165,30 @@ IconButton hit targets. From left to right on paired desktops:
 There is no duplicate global Share mouse & keyboard button. Existing
 per-device Wake, Phone/Quest and Disconnect actions remain. Active actions
 use a muted theme tint and rounded fill, inactive actions stay outlined.
-The button hint strings remain available to accessibility integrations,
-but pop-up tooltip overlays are intentionally disabled to keep the narrow
-Devices panel unobstructed.
+Most button hint strings remain available to accessibility integrations
+without pop-up overlays. The safe Refresh and offline-only Tailscale recovery
+buttons opt in to short multiline hover tooltips so the distinction is clear.
 
 Run python3 -m unittest discover -s tests -p 'test_*.py' before release.
 For production installations with uncommitted local plugin customizations,
 the auto-updater intentionally skips Git updates; do not force-reset.
 Merge and validate local differences first, taking a rollback backup.
+
+## Tailscale recovery (Devices panel)
+
+The regular refresh button never changes the network. When the local tailnet
+backend is down, a small warning icon appears to the left of the normal
+**Refresh** button. Hovering it explains what the action does. Clicking it
+starts/restarts Tailscale; it does not run when only the MCP tunnel is offline. It asks polkit to restart only
+`tailscaled.service` once, then verifies Tailscale peer reachability to
+`philipedia` and Home Dashboard HTTPS. If the device requires sign-in, the
+result says so; it never silently changes an exit-node or VPN Gate route.
+This may interrupt a remote session, so it is never run automatically.
+
+An unclassified Linux exit-node peer is a fallback tunnel server candidate
+when `device-types.conf` lacks an explicit `mcp-tunnel` role. A real watchdog
+reply is still required before reporting the tunnel as healthy.
+
+The amber recovery icon has a small non-obstructing hover explanation placed
+to its left. The existing circular Refresh button is always a non-mutating
+status recheck and never restarts a service.

@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls as QtControls
 import Quickshell
 import Quickshell.Io
 import Caelestia.Components
@@ -390,15 +391,33 @@ Item {
         property bool accent: false
         property bool showHint: false
 
-        // Only explicitly opted-in buttons show tooltips in this narrow panel.
-        Loader {
-            active: btn.showHint
-            asynchronous: false
-            sourceComponent: Component {
-                Tooltip {
-                    target: btn
-                    text: btn.hint
-                }
+        // Compact safety hint positioned to the LEFT of the recovery button.
+        // It is a floating popup, never increasing the header layout width.
+        QtControls.Popup {
+            id: compactHint
+            parent: btn
+            x: -width - Tokens.spacing.small
+            y: Math.min(0, (btn.height - height) / 2)
+            width: 218
+            padding: 9
+            height: hintMessage.implicitHeight + padding * 2
+            visible: btn.showHint && btn.hovered
+            modal: false
+            focus: false
+            closePolicy: QtControls.Popup.NoAutoClose
+            background: Rectangle {
+                color: Colours.palette.m3surfaceContainerHighest
+                radius: Tokens.rounding.small
+                border.width: 1
+                border.color: Colours.palette.m3outlineVariant
+            }
+            contentItem: StyledText {
+                id: hintMessage
+                width: compactHint.width - compactHint.padding * 2
+                text: btn.hint
+                wrapMode: Text.WordWrap
+                font: Tokens.font.body.small
+                color: Colours.palette.m3onSurface
             }
         }
 
@@ -1447,7 +1466,7 @@ Item {
             icon: RemoteDesktop.RemoteStatus.connectivityRepairing ? "hourglass_top" : "sync_problem"
             accent: true
             showHint: true
-            hint: qsTr("Start/restart Tailscale\nAuthorization required\nRemote sessions may briefly disconnect")
+            hint: qsTr("Start or restart Tailscale. Your remote connections may briefly disconnect. Files and VPN settings are preserved; authorization is required.")
             disabled: RemoteDesktop.RemoteStatus.connectivityRepairing
             onClicked: RemoteDesktop.RemoteStatus.reconnectTailscale()
 
@@ -1465,8 +1484,7 @@ Item {
 
         ActionButton {
             icon: "refresh"
-            showHint: true
-            hint: qsTr("Refresh status only\nNo restarts or route changes")
+            hint: qsTr("Refresh status only; no restarts or route changes")
             onClicked: RemoteDesktop.RemoteStatus.refreshNow()
         }
     }

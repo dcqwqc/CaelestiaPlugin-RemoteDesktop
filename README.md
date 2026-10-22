@@ -188,3 +188,7 @@ This may interrupt a remote session, so it is never run automatically.
 An unclassified Linux exit-node peer is a fallback tunnel server candidate
 when `device-types.conf` lacks an explicit `mcp-tunnel` role. A real watchdog
 reply is still required before reporting the tunnel as healthy.
+
+The amber recovery icon has a small non-obstructing hover explanation placed
+to its left. The existing circular Refresh button is always a non-mutating
+status recheck and never restarts a service.

@@ -177,8 +177,9 @@ Merge and validate local differences first, taking a rollback backup.
 ## Tailscale recovery (Devices panel)
 
 The regular refresh button never changes the network. When the local tailnet
-backend is down or a configured MCP tunnel server is offline, a separate
-**Reconnect Tailscale** action appears. It asks polkit to restart only
+backend is down, a small warning icon appears to the left of the normal
+**Refresh** button. Hovering it explains what the action does. Clicking it
+starts/restarts Tailscale; it does not run when only the MCP tunnel is offline. It asks polkit to restart only
 `tailscaled.service` once, then verifies Tailscale peer reachability to
 `philipedia` and Home Dashboard HTTPS. If the device requires sign-in, the
 result says so; it never silently changes an exit-node or VPN Gate route.

@@ -403,6 +403,10 @@ Item {
         inactiveOnColour: accent ? Colours.palette.m3primary : Colours.palette.m3onSurfaceVariant
         label.fill: accent ? 1 : 0
 
+        Tooltip {
+            target: btn
+            text: btn.hint
+        }
     }
 
     component HostRow: ColumnLayout {
@@ -1428,16 +1432,16 @@ Item {
 
         ActionButton {
             visible: RemoteDesktop.RemoteStatus.tailscaleBackend !== "Running"
-                || RemoteDesktop.RemoteStatus.tunnelState !== "online"
+                && RemoteDesktop.RemoteStatus.tailscaleBackend !== "unknown"
             icon: "sync_problem"
             disabled: RemoteDesktop.RemoteStatus.connectivityRepairing
-            hint: qsTr("Reconnect local Tailscale (authorization required; may interrupt remote sessions)")
+            hint: qsTr("Tailscale is offline — click to start or restart it. Requires authorization; remote sessions may briefly disconnect.")
             onClicked: RemoteDesktop.RemoteStatus.reconnectTailscale()
         }
 
         ActionButton {
             icon: "refresh"
-            hint: qsTr("Check device connections now")
+            hint: qsTr("Refresh connection status only. Safe: no services or VPN routes are changed.")
             onClicked: RemoteDesktop.RemoteStatus.refreshNow()
         }
     }

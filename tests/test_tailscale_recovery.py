@@ -85,6 +85,11 @@ class TailscaleRecoveryTests(unittest.TestCase):
         self.assertIn('device.serverHint', STATUS)
         self.assertIn('device.tunnelCandidate', STATUS)
         self.assertIn('node.ExitNodeOption', STATUS)
+        self.assertIn('target: btn', PANEL)
+        self.assertIn('text: btn.hint', PANEL)
+        self.assertIn('tailscaleBackend !== "Running"', PANEL)
+        self.assertIn('tailscaleBackend !== "unknown"', PANEL)
+        self.assertIn('Refresh connection status only.', PANEL)
 
 
 if __name__ == '__main__':

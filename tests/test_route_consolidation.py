@@ -15,6 +15,15 @@ class AttachedRouteTests(unittest.TestCase):
         self.assertNotIn("id: routeDetails",POP)
         self.assertEqual(POP.count("id: routeFlyout"),1)
         self.assertEqual(POP.count("id: vpnPanel"),1)
+    def test_compact_both_panes(self):
+        self.assertIn("routeExpanded ? routePaneContents.implicitHeight + 24 : 0",POP)
+        self.assertNotIn("routeExpanded ? 420 : 0",POP)
+        self.assertIn("id: routePaneContents",POP)
+        self.assertIn("Math.min(3, vpnPanel.filteredCountries.length) * 32",POP)
+        self.assertNotIn("VPN connected and verified",POP)
+        self.assertNotIn('title: qsTr("Disconnect VPN")',POP)
+        self.assertIn('onChosen: root.selectRoute("")',POP)
+        self.assertIn('onClicked: vpnPanel.connectOrPrepare()',POP)
     def test_icons_and_countries(self):
         self.assertIn("icon: " + chr(34) + "public" + chr(34),POP)
         self.assertIn("icon: " + chr(34) + "router" + chr(34),POP)

@@ -87,8 +87,9 @@ Item {
         ? devicePaneWidth + routePaneWidth : devicePaneWidth
     // Keep the bar popout within a small/rotated display; expanding several
     // peers scrolls inside the panel rather than pushing it off screen.
-    implicitHeight: Math.min(
-        Math.max(deviceContent.implicitHeight, routeExpanded ? 420 : 0),
+    // Both panes follow their content instead of reserving 420px.
+    implicitHeight: Math.min(Math.max(deviceContent.implicitHeight,
+        routeExpanded ? routePaneContents.implicitHeight + 24 : 0),
         maxPanelHeight)
     readonly property real maxPanelHeight: Math.max(220,
         Math.min(680, (Quickshell.screens.length > 0 ? Quickshell.screens[0].height : 900) - 96))
@@ -1672,12 +1673,13 @@ Item {
         }
 
         ColumnLayout {
+            id: routePaneContents
             anchors.fill: parent
             anchors.leftMargin: 14
             anchors.rightMargin: 14
             anchors.topMargin: 12
             anchors.bottomMargin: 12
-            spacing: 7
+            spacing: 5
 
             RowLayout {
                 Layout.fillWidth: true
@@ -1734,8 +1736,7 @@ Item {
 
             ColumnLayout {
                 Layout.fillWidth: true
-                Layout.fillHeight: true
-                spacing: 4
+                spacing: 3
                 visible: root.routePage !== "servers"
 
                 RouteChoice {
@@ -1827,7 +1828,8 @@ Item {
                 ListView {
                     id: allCountryList
                     Layout.fillWidth: true
-                    Layout.fillHeight: true
+                    Layout.preferredHeight: Math.min(3, vpnPanel.filteredCountries.length) * 32
+                    implicitHeight: Layout.preferredHeight
                     clip: true
                     boundsBehavior: Flickable.StopAtBounds
                     interactive: contentHeight > height
@@ -1836,7 +1838,7 @@ Item {
                         id: countryOption
                         required property var modelData
                         width: allCountryList.width
-                        height: 34
+                        height: 32
                         readonly property bool activeExit: root.vpnVerified
                             && countryOption.modelData.code === vpnPanel.countryCode
                         RowLayout {
@@ -1869,30 +1871,18 @@ Item {
                         }
                     }
                 }
-                RowLayout {
+                StyledText {
                     Layout.fillWidth: true
-                    visible: vpnPanel.connected || vpnPanel.working
-                        || vpnPanel.routePending || vpnPanel.awaitingDirect
-                        || vpnPanel.errorText.length > 0
-                    StyledText {
-                        Layout.fillWidth: true
-                        text: vpnPanel.errorText.length ? vpnPanel.errorText
-                            : vpnPanel.routePending ? qsTr("Switching to Direct…")
-                            : vpnPanel.working ? qsTr("Connecting / verifying…")
-                            : vpnPanel.connected ? root.vpnVerified
-                                ? qsTr("VPN connected and verified")
-                                : qsTr("VPN connected · verifying")
-                            : qsTr("Direct route needed")
-                        color: vpnPanel.errorText.length ? Colours.palette.m3error
-                            : Colours.palette.m3onSurfaceVariant
-                        font: Tokens.font.label.small
-                        wrapMode: Text.Wrap
-                    }
+                    visible: vpnPanel.errorText.length > 0
+                    text: vpnPanel.errorText
+                    color: Colours.palette.m3error
+                    font: Tokens.font.label.small
+                    wrapMode: Text.Wrap
                 }
                 Rectangle {
                     Layout.fillWidth: true
-                    height: 33
-                    radius: 9
+                    implicitHeight: 30
+                    radius: 8
                     visible: vpnPanel.awaitingDirect && !vpnPanel.connected
                     color: Colours.palette.m3onSurface
                     opacity: vpnPanel.routePending ? 0.6 : 1
@@ -1910,19 +1900,13 @@ Item {
                         onClicked: vpnPanel.connectOrPrepare()
                     }
                 }
-                RouteChoice {
-                    visible: vpnPanel.connected
-                    title: qsTr("Disconnect VPN")
-                    icon: "power_settings_new"
-                    available: !root.routeBusy
-                    onChosen: vpnPanel.connectOrPrepare()
-                }
             }
 
             Flickable {
                 id: advancedServers
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Layout.preferredHeight: root.routePage === "servers" ? 308 : 0
                 visible: root.routePage === "servers"
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds

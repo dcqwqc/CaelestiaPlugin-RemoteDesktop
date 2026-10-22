@@ -5,21 +5,26 @@ import unittest
 SRC=(Path(__file__).resolve().parents[1]/"bar/RemotePopout.qml").read_text()
 
 class VpnQuickUiTests(unittest.TestCase):
-    def test_compact_summary(self):
-        self.assertIn('text: vpn.connected ? vpn.countryName : qsTr("Off")', SRC)
-        self.assertIn('onClicked: vpn.quickPicker ? vpn.quickPicker = false : vpn.openQuickPicker()', SRC)
-        self.assertIn('onClicked: vpn.connectOrPrepare()', SRC)
+    def test_route_is_only_navigation_surface(self):
+        self.assertIn("vpnPanel.connected ? vpnPanel.countryName", SRC)
+        self.assertIn("onClicked: root.routeExpanded = !root.routeExpanded", SRC)
+        self.assertIn("id: routeDetails", SRC)
+        self.assertIn("visible: root.routeExpanded", SRC)
+        self.assertEqual(SRC.count("id: vpnPanel"), 1)
 
-    def test_country_picker_and_advanced_independent(self):
-        self.assertIn('id: quickCountryList', SRC)
-        self.assertIn('onClicked: vpn.quickConnectCountry(quickCountryRow.modelData.code, quickCountryRow.modelData.name)', SRC)
-        self.assertIn('vpn.expanded = !vpn.expanded;', SRC)
-        self.assertIn('id: serverList', SRC)
+    def test_country_picker_and_advanced_in_one_dropdown(self):
+        self.assertIn("id: quickCountryList", SRC)
+        self.assertIn("id: serverList", SRC)
+        self.assertIn('text: qsTr("VPN countries")', SRC)
+        self.assertIn("onClicked: vpnPanel.expanded = !vpnPanel.expanded", SRC)
+        self.assertIn("onClicked: vpn.quickConnectCountry(quickCountryRow.modelData.code, quickCountryRow.modelData.name)", SRC)
 
-    def test_route_menu_still_available(self):
-        self.assertIn('text: qsTr("VPN countries…")', SRC)
-        self.assertIn('item.opensVpnPicker', SRC)
-        self.assertIn('RemoteDesktop.RemoteStatus.setExitNode(item.nodeId)', SRC)
+    def test_direct_tailscale_vpn_choices(self):
+        self.assertIn('title: qsTr("Direct")', SRC)
+        self.assertIn('text: qsTr("Tailscale")', SRC)
+        self.assertIn("model: RemoteDesktop.RemoteStatus.exitNodes", SRC)
+        self.assertIn("onChosen: root.selectRoute(modelData.id)", SRC)
+        self.assertIn("RemoteDesktop.RemoteStatus.setExitNode(nodeId)", SRC)
 
     def test_user_action_precedes_route_changes(self):
         fn=SRC.split('function connectOrPrepare() {',1)[1].split('function readStatus() {',1)[0]

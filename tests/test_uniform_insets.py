@@ -28,8 +28,8 @@ class DevicesPaddingTests(unittest.TestCase):
 
     def test_device_actions_and_routes_remain(self):
         self.assertIn("id: deviceContent", QML)
-        self.assertIn('text: vpn.connected ? vpn.countryName : qsTr("Off")', QML)
-        self.assertIn("RemoteDesktop.RemoteStatus.setExitNode(item.nodeId)", QML)
+        self.assertIn("vpnPanel.connected ? vpnPanel.countryName", QML)
+        self.assertIn("RemoteDesktop.RemoteStatus.setExitNode(nodeId)", QML)
         self.assertIn("id: vpnPanel", QML)
 
 

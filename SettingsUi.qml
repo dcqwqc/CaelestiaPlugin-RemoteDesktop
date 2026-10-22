@@ -17,7 +17,7 @@ ColumnLayout {
 
     property var settings: null
     Layout.fillWidth: true
-    spacing: Tokens.spacing.extraSmall / 2
+    spacing: Tokens.spacing.extraSmall
 
     readonly property var iconChoices: [
         { label: "Auto", value: "auto" },
@@ -137,6 +137,9 @@ ColumnLayout {
             id: button
             anchors.fill: parent
             type: SplitButton.Tonal
+            colour: "transparent"
+            textColour: Colours.palette.m3onSurface
+            horizontalPadding: Tokens.padding.small
             menuItems: picker.menuEntries
             active: {
                 const current = root.iconChoiceFor(picker.device);
@@ -157,7 +160,7 @@ ColumnLayout {
 
     SectionHeader {
         first: true
-        text: qsTr("Caelestia Connect")
+        text: qsTr("Connection")
     }
 
     PluginConnectSettings {
@@ -165,7 +168,7 @@ ColumnLayout {
     }
 
     SectionHeader {
-        text: "Devices"
+        text: qsTr("Device appearance")
     }
 
     StyledText {
@@ -173,7 +176,7 @@ ColumnLayout {
         Layout.leftMargin: Tokens.padding.small
         Layout.rightMargin: Tokens.padding.small
         Layout.bottomMargin: Tokens.spacing.small
-        text: "Rename devices, hide them from Devices, or override the automatically detected icon."
+        text: qsTr("Names, icons and visibility.")
         color: Colours.palette.m3outline
         font: Tokens.font.label.small
         wrapMode: Text.WordWrap
@@ -183,7 +186,7 @@ ColumnLayout {
         id: deviceRepeater
         model: root.devices
 
-        ConnectedRect {
+        Item {
             id: deviceRow
 
             required property var modelData
@@ -192,19 +195,17 @@ ColumnLayout {
             readonly property var device: modelData
 
             Layout.fillWidth: true
-            first: index === 0
-            last: index === deviceRepeater.count - 1
-            implicitHeight: deviceLayout.implicitHeight + Tokens.padding.medium * 2
+            implicitHeight: deviceLayout.implicitHeight + Tokens.padding.small * 2
             clip: false
             z: iconPicker.expanded ? 20 : 0
 
             ColumnLayout {
                 id: deviceLayout
                 anchors.fill: parent
-                anchors.margins: Tokens.padding.medium
-                anchors.leftMargin: Tokens.padding.largeIncreased
-                anchors.rightMargin: Tokens.padding.largeIncreased
-                spacing: Tokens.spacing.small
+                anchors.margins: Tokens.padding.small
+                anchors.leftMargin: Tokens.padding.small
+                anchors.rightMargin: Tokens.padding.small
+                spacing: Tokens.spacing.extraSmall
 
                 RowLayout {
                     Layout.fillWidth: true
@@ -295,8 +296,10 @@ ColumnLayout {
                     StyledRect {
                         Layout.fillWidth: true
                         implicitHeight: nameInput.implicitHeight + Tokens.padding.small * 2
-                        radius: Tokens.rounding.large
-                        color: Colours.tPalette.m3surfaceContainerHighest
+                        radius: Tokens.rounding.medium
+                        color: "transparent"
+                        border.width: 1
+                        border.color: Colours.palette.m3outlineVariant
 
                         StyledTextField {
                             id: nameInput
@@ -316,6 +319,14 @@ ColumnLayout {
                     }
                 }
             }
+            Rectangle {
+                anchors.bottom: parent.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 1
+                opacity: 0.35
+                color: Colours.palette.m3outlineVariant
+            }
         }
     }
 
@@ -328,14 +339,14 @@ ColumnLayout {
     }
 
     SectionHeader {
-        text: "Streaming"
+        text: qsTr("Remote desktop")
     }
 
     StepperRow {
         Layout.fillWidth: true
         first: true
         label: "Bitrate"
-        subtext: "Kbps. Zero derives it from the streamed resolution."
+        subtext: qsTr("0 = automatic")
         from: 0
         to: 80000
         stepSize: 500
@@ -356,7 +367,7 @@ ColumnLayout {
     StepperRow {
         Layout.fillWidth: true
         label: "Freeze after"
-        subtext: "Seconds an unwatched remote workspace stays alive."
+        subtext: qsTr("Seconds before idle freeze")
         from: 15
         to: 3600
         stepSize: 15
@@ -367,7 +378,7 @@ ColumnLayout {
     ToggleRow {
         Layout.fillWidth: true
         text: "Follow the client's keyboard layout"
-        subtext: "Retargets only the injected remote keyboard layout."
+        subtext: qsTr("Use the client's keyboard layout")
         checked: root.settings?.followKeyboardLayout ?? true
         onToggled: if (root.settings) root.settings.followKeyboardLayout = checked
     }
@@ -378,7 +389,7 @@ ColumnLayout {
         Layout.fillWidth: true
         last: true
         label: "Send system shortcuts to the remote"
-        subtext: "Controls where Super and other system shortcuts are handled."
+        subtext: qsTr("Where system shortcuts are handled")
 
         readonly property var options: ["never", "fullscreen", "always"]
         readonly property var optionItems: options.map(option => systemKeyOption.createObject(systemKeysRow, { text: option }))

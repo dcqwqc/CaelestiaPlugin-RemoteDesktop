@@ -1427,6 +1427,15 @@ Item {
         }
 
         ActionButton {
+            visible: RemoteDesktop.RemoteStatus.tailscaleBackend !== "Running"
+                || RemoteDesktop.RemoteStatus.tunnelState !== "online"
+            icon: "sync_problem"
+            disabled: RemoteDesktop.RemoteStatus.connectivityRepairing
+            hint: qsTr("Reconnect local Tailscale (authorization required; may interrupt remote sessions)")
+            onClicked: RemoteDesktop.RemoteStatus.reconnectTailscale()
+        }
+
+        ActionButton {
             icon: "refresh"
             hint: qsTr("Check device connections now")
             onClicked: RemoteDesktop.RemoteStatus.refreshNow()

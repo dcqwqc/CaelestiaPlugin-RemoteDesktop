@@ -173,3 +173,17 @@ Run python3 -m unittest discover -s tests -p 'test_*.py' before release.
 For production installations with uncommitted local plugin customizations,
 the auto-updater intentionally skips Git updates; do not force-reset.
 Merge and validate local differences first, taking a rollback backup.
+
+## Tailscale recovery (Devices panel)
+
+The regular refresh button never changes the network. When the local tailnet
+backend is down or a configured MCP tunnel server is offline, a separate
+**Reconnect Tailscale** action appears. It asks polkit to restart only
+`tailscaled.service` once, then verifies Tailscale peer reachability to
+`philipedia` and Home Dashboard HTTPS. If the device requires sign-in, the
+result says so; it never silently changes an exit-node or VPN Gate route.
+This may interrupt a remote session, so it is never run automatically.
+
+An unclassified Linux exit-node peer is a fallback tunnel server candidate
+when `device-types.conf` lacks an explicit `mcp-tunnel` role. A real watchdog
+reply is still required before reporting the tunnel as healthy.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Diagnose and repair the local services that the Remote Desktop popout relies on.
-# System services (tailscaled/sshd) are restarted by the QML side through pkexec;
-# this helper only touches user services and performs an unprivileged diagnosis.
+# The explicit repair-tailscale mode authorizes exactly one local service
+# restart via polkit. The ordinary diagnosis never mutates network state.
 set -u
 
 mode=${1:-diagnose}
@@ -19,8 +19,45 @@ if [[ $mode == repair-user ]]; then
     exit 0
 fi
 
+if [[ $mode == repair-tailscale ]]; then
+    # A local user action only. No automatic restart from a polling refresh;
+    # sudo privileges are not cached or inferred from the SSH session.
+    if ! command -v pkexec >/dev/null 2>&1; then
+        jq -cn '{ok:false,message:"Polkit is unavailable. Reconnect Tailscale from a local terminal."}'
+        exit 1
+    fi
+    error=$(pkexec /usr/bin/systemctl restart tailscaled.service 2>&1)
+    result=$?
+    if (( result != 0 )); then
+        jq -cn --arg message "Tailscale restart was not authorized or failed: ${error:0:160}" \
+            '{ok:false,message:$message}'
+        exit 1
+    fi
+    backend=$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "Stopped"' 2>/dev/null || true)
+    if [[ $backend != Running ]]; then
+        jq -cn --arg backend "${backend:-Stopped}" \
+            '{ok:false,message:("Tailscale service restarted but the backend is " + $backend + ". Open Tailscale to sign in or repair the connection.")}'
+        exit 1
+    fi
+    if ! tailscale ping --c 1 --timeout 5s philipedia >/dev/null 2>&1; then
+        jq -cn '{ok:false,message:"Tailscale is running, but Philipedia cannot be reached yet. Check the Tailscale peer connection."}'
+        exit 1
+    fi
+    if ! curl -fsSI --connect-timeout 3 --max-time 6 https://home.qwqc.de/ >/dev/null 2>&1; then
+        jq -cn '{ok:false,message:"Philipedia responds over Tailscale, but Home Dashboard HTTPS is still unavailable."}'
+        exit 1
+    fi
+    health=$(curl -fsS --connect-timeout 3 --max-time 6 https://home.qwqc.de/api/v1/health 2>/dev/null || true)
+    if ! jq -e '.service == "home-api" and .status == "ok"' <<< "$health" >/dev/null 2>&1; then
+        jq -cn '{ok:false,message:"Home Dashboard responds, but the Home API health check has not recovered."}'
+        exit 1
+    fi
+    jq -cn '{ok:true,message:"Tailscale, Home Dashboard and Home API are reachable."}'
+    exit 0
+fi
+
 if [[ $mode != diagnose ]]; then
-    echo "usage: connectivity-repair [diagnose|repair-user]" >&2
+    echo "usage: connectivity-repair [diagnose|repair-user|repair-tailscale]" >&2
     exit 2
 fi
 

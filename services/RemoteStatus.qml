@@ -162,11 +162,18 @@ Singleton {
             connectivityDiagProc.running = true;
     }
 
-    // Compatibility with older callers: repair requests are diagnostic-only
-    // until a separate, explicitly confirmed and connection-safe repair flow
-    // is designed.
+    // Refresh remains non-mutating. Network repair is a separate, explicit
+    // local UI action and never runs on a timer or from a status refresh.
     function repairConnectivity(): void {
         root.refreshNow();
+    }
+
+    function reconnectTailscale(): void {
+        if (connectivityRepairing || connectivityRepairProc.running)
+            return;
+        connectivityRepairing = true;
+        connectivityRepairError = "";
+        connectivityRepairProc.running = true;
     }
 
     function setExitNode(nodeId): void {
@@ -353,6 +360,11 @@ Singleton {
                                     : (node.OS || "").toLowerCase() === "ios" ? "tablet"
                                     : "desktop"),
                             tunnelCandidate: (root.deviceRoles[hostId] ?? []).includes("mcp-tunnel"),
+                            // A Linux peer offering a Tailscale exit node is a
+                            // useful fallback server *candidate*, not proof
+                            // that it hosts our watchdog. SSH verifies that.
+                            serverHint: !isSelf && (node.OS || "").toLowerCase() === "linux"
+                                && !!node.ExitNodeOption,
                             isSelf: isSelf,
                             // Configured in hosts.conf, never inferred from
                             // tailnet membership. Both hosts serve and both
@@ -405,9 +417,16 @@ Singleton {
                     // Existing two-column device-types.conf files remain
                     // compatible. Once any peer has an explicit mcp-tunnel
                     // role, only those peers participate in this health check.
+                    const serverClassTargets = devices
+                        .filter(device => device.type === "server" && !device.isSelf);
+                    // When device-types.conf is absent/old, attempt the Linux
+                    // exit-node peers rather than claiming no server exists.
+                    // A positive watchdog status is still required for green.
+                    const inferredTunnelTargets = devices
+                        .filter(device => device.serverHint && !device.isSelf);
                     const tunnelServers = explicitTunnelTargets.length > 0
                         ? explicitTunnelTargets
-                        : devices.filter(device => device.type === "server" && !device.isSelf);
+                        : serverClassTargets.length > 0 ? serverClassTargets : inferredTunnelTargets;
                     root.tunnelProbeTargets = tunnelServers
                         .filter(device => device.online)
                         .map(device => device.actionHost);
@@ -417,6 +436,10 @@ Singleton {
                         // the slower tunnel timer.
                         if (!tunnelStatusProc.running)
                             tunnelStatusProc.running = true;
+                    } else if (data.BackendState !== "Running") {
+                        root.tunnelState = "offline";
+                        root.tunnelHost = "";
+                        root.tunnelReason = qsTr("Tailscale is %1 locally; reconnect this device before checking the MCP server.").arg(root.tailscaleBackend);
                     } else if (tunnelServers.length > 0) {
                         // Do not spend every tunnel interval waiting for SSH
                         // to time out when Tailscale already has a stronger,
@@ -430,7 +453,9 @@ Singleton {
                     } else {
                         root.tunnelState = "unknown";
                         root.tunnelHost = "";
-                        root.tunnelReason = qsTr("No server-class Tailscale peer is configured; MCP tunnel health cannot be checked.");
+                        root.tunnelReason = data.BackendState !== "Running"
+                            ? qsTr("Tailscale is %1 on this device. Reconnect it before checking the MCP tunnel.").arg(root.tailscaleBackend)
+                            : qsTr("No MCP server was discoverable. Assign the mcp-tunnel role to its peer in device-types.conf.");
                     }
                 } catch (e) {
                     // Retain device identities but never show a stale green status.
@@ -509,6 +534,33 @@ Singleton {
         }
     }
 
+
+    // Explicit local recovery action. Uses polkit to authorize one service
+    // restart and reports whether both the tailnet and house are reachable.
+    // Never invoked by refresh, startup or any timer.
+    Process {
+        id: connectivityRepairProc
+        running: false
+        command: [root.connectivityBin, "repair-tailscale"]
+        property string stderrText: ""
+        stderr: StdioCollector { onStreamFinished: connectivityRepairProc.stderrText = text.trim() }
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const result = JSON.parse(text);
+                    root.connectivityRepairError = result.ok ? "" : String(result.message ?? qsTr("Tailscale was not reconnected."));
+                } catch (e) {
+                    root.connectivityRepairError = qsTr("Could not read Tailscale recovery result: %1").arg(String(e));
+                }
+            }
+        }
+        onExited: code => {
+            if (code !== 0 && !root.connectivityRepairError)
+                root.connectivityRepairError = connectivityRepairProc.stderrText || qsTr("Tailscale recovery was not completed.");
+            root.connectivityRepairing = false;
+            root.refreshNow();
+        }
+    }
 
     Process {
         id: connectivityDiagProc

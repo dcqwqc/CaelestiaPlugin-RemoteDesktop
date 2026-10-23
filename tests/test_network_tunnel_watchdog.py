@@ -20,6 +20,8 @@ class NetworkTunnelWatchdogTests(unittest.TestCase):
         self.assertIn("REMOTE_WATCHDOG_MIN_FAILURES", text)
         self.assertIn("REMOTE_WATCHDOG_COOLDOWN", text)
         self.assertIn("tailscale ping", text)
+        self.assertIn("break-derp-conns", text)
+        self.assertIn("force-prefer-derp", text)
         self.assertIn("flock -n", text)
         self.assertNotIn("tailscale down", text)
 

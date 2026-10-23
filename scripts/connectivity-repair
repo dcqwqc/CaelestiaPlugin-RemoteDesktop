@@ -19,6 +19,26 @@ if [[ $mode == repair-user ]]; then
     exit 0
 fi
 
+if [[ $mode == repair-safe ]]; then
+    # Start only explicitly enabled, stopped user services. Never restart
+    # Tailscale, sshd, VPN routing or any running service automatically.
+    started=""
+    failed=""
+    for unit in philipedia-mcp-tunnel.service sumi-openai-tunnel.service; do
+        systemctl --user is-enabled --quiet "$unit" 2>/dev/null || continue
+        systemctl --user is-active --quiet "$unit" 2>/dev/null && continue
+        if systemctl --user start "$unit" >/dev/null 2>&1 &&
+                systemctl --user is-active --quiet "$unit"; then
+            started="$started $unit"
+        else
+            failed="$failed $unit"
+        fi
+    done
+    jq -nc --arg started "$started" --arg failed "$failed"         '{ok:($failed==""),started:$started,failed:$failed,message:(if $failed!="" then "An enabled user service could not start." elif $started!="" then "Recovered stopped user services." else "Nothing requires restarting." end)}'
+    [[ -z "$failed" ]]
+    exit
+fi
+
 if [[ $mode == repair-tailscale ]]; then
     # A local user action only. No automatic restart from a polling refresh;
     # sudo privileges are not cached or inferred from the SSH session.
@@ -57,7 +77,7 @@ if [[ $mode == repair-tailscale ]]; then
 fi
 
 if [[ $mode != diagnose ]]; then
-    echo "usage: connectivity-repair [diagnose|repair-user|repair-tailscale]" >&2
+    echo "usage: connectivity-repair [diagnose|repair-safe|repair-user|repair-tailscale]" >&2
     exit 2
 fi
 

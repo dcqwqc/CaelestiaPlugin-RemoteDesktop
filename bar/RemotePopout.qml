@@ -437,6 +437,16 @@ Item {
 
     }
 
+    // Clicking a red diagnostic copies its entire text without modifying it.
+    component CopyableError: StyledText {
+        id: errorLabel
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: Quickshell.clipboardText = String(errorLabel.text || "")
+        }
+    }
+
     component HostRow: ColumnLayout {
         id: hostRow
 
@@ -658,7 +668,7 @@ Item {
             }
         }
 
-        StyledText {
+        CopyableError {
             Layout.fillWidth: true
             Layout.leftMargin: Tokens.padding.large
             Layout.rightMargin: 0
@@ -822,7 +832,7 @@ Item {
             }
         }
 
-        StyledText {
+        CopyableError {
             Layout.fillWidth: true
             Layout.leftMargin: 20 + Tokens.spacing.extraSmall
             visible: !choice.session.busy && (choice.session.actionError.length > 0 || choice.session.statusError.length > 0)
@@ -1421,7 +1431,7 @@ Item {
                 }
             }
 
-            StyledText {
+            CopyableError {
                 Layout.fillWidth: true
                 visible: vpn.errorText.length > 0
                 text: vpn.errorText
@@ -1456,6 +1466,21 @@ Item {
             Layout.fillWidth: true
             text: qsTr("Devices")
             font: Tokens.font.body.builders.medium.weight(Font.Medium).build()
+        }
+
+        // Visible only when unhealthy; recovery attempts are otherwise automatic.
+        ActionButton {
+            id: repairConnectionButton
+            visible: RemoteDesktop.RemoteStatus.tailscaleStatusChecked
+                && RemoteDesktop.RemoteStatus.overallHealth !== "reachable"
+            icon: RemoteDesktop.RemoteStatus.selfHealing ? "hourglass_top" : "build_circle"
+            showHint: true
+            hint: RemoteDesktop.RemoteStatus.selfHealing
+                ? qsTr("Checking safe connection recovery…")
+                : qsTr("Repair connection: retry diagnostics and recover stopped enabled user services. Tailscale restart requires separate authorization. Never changes files or VPN routes.")
+            disabled: RemoteDesktop.RemoteStatus.selfHealing
+                || RemoteDesktop.RemoteStatus.connectivityRepairing
+            onClicked: RemoteDesktop.RemoteStatus.repairConnection()
         }
 
         // Tailscale's explicit recovery action is separate from safe refresh.
@@ -1626,7 +1651,7 @@ Item {
         }
     }
 
-    StyledText {
+    CopyableError {
         Layout.fillWidth: true
         Layout.leftMargin: root.horizontalInset
         Layout.rightMargin: root.horizontalInset

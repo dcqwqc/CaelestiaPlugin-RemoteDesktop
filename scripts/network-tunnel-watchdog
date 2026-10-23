@@ -26,6 +26,11 @@ reset_failures() {
     printf '0\n' > "$fail_file"
 }
 
+mark_tunnel_online() {
+    local short=${host%%.*}
+    printf '%s\n' "$(date +%s)" > "$state_dir/tunnel-${short//[^a-zA-Z0-9_-]/_}.online"
+}
+
 active_uplink() {
     ip -4 route show default 2>/dev/null | awk 'NR == 1 {print $5}'
 }
@@ -53,6 +58,7 @@ tunnel_ok() {
 }
 
 if internet_ok && tunnel_ok; then
+    mark_tunnel_online
     reset_failures
     exit 0
 fi
@@ -91,6 +97,7 @@ if internet_ok; then
 fi
 
 if internet_ok && tunnel_ok; then
+    mark_tunnel_online
     reset_failures
     logger -t remote-desktop-watchdog 'Network and Philipedia MCP tunnel recovered'
     exit 0

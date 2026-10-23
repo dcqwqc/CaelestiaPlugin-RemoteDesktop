@@ -4,7 +4,7 @@ set -u
 
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/remote-desktop-watchdog"
 mkdir -p "$state_dir"
-cache_ttl=${REMOTE_TUNNEL_CACHE_TTL:-600}
+cache_ttl=${REMOTE_TUNNEL_CACHE_TTL:-120}
 
 json_result() {
   jq -cn --arg state "$1" --arg host "$2" --arg reason "$3" \
@@ -62,23 +62,28 @@ fallback_reason='No server reported a valid MCP tunnel watchdog status.'
 for host in "$@"; do
   [[ -n "$host" ]] || continue
   short="${host%%.*}"
+  cache="$state_dir/tunnel-${short//[^a-zA-Z0-9_-]/_}.online"
+  last=0
+  [[ -r $cache ]] && read -r last < "$cache"
+  [[ $last =~ ^[0-9]+$ ]] || last=0
+  if (( $(date +%s) - last < cache_ttl )) &&
+     timeout 4 tailscale ping -c 1 "$host" >/dev/null 2>&1; then
+    json_result online "$short" ''
+    exit 0
+  fi
   # Wake endpoint discovery before SSH. Mobile tethering frequently changes
   # NAT mappings while the Tailscale peer itself remains healthy.
   timeout 6 tailscale ping -c 1 "$host" >/dev/null 2>&1 || true
   report=''
   exit_code=255
-  for attempt in 1 2 3; do
-    report=$(printf '%s\n' "$remote_probe" | ssh -o BatchMode=yes -o ConnectTimeout=5 \
+  for attempt in 1 2; do
+    report=$(printf '%s\n' "$remote_probe" | timeout 8 ssh -o BatchMode=yes -o ConnectTimeout=5 \
       -o ConnectionAttempts=1 "$host" 'bash -s' 2>&1)
     exit_code=$?
     (( exit_code == 0 )) && break
-    (( attempt < 3 )) && sleep 1
+    (( attempt < 2 )) && sleep 1
   done
   if (( exit_code != 0 )); then
-    cache="$state_dir/tunnel-${short//[^a-zA-Z0-9_-]/_}.online"
-    last=0
-    [[ -r $cache ]] && read -r last < "$cache"
-    [[ $last =~ ^[0-9]+$ ]] || last=0
     # An SSH timeout is not proof that the outbound MCP tunnel is down. Keep a
     # recently verified healthy state while Tailscale still reaches the peer;
     # the independent watchdog continues active repair in the background.

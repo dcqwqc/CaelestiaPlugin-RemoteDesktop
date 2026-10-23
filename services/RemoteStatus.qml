@@ -113,6 +113,38 @@ Singleton {
     property bool connectivityRepairing: false
     property string connectivityRepairError: ""
 
+    // Automatic recovery never resets Tailscale or changes VPN routes.
+    property int tunnelFastRetries: 0
+    property int autoHealBadChecks: 0
+    property double lastAutoHealAt: 0
+    property bool selfHealing: false
+    property string selfHealMessage: ""
+
+    function repairConnection(): void {
+        if (tailscaleBackend !== "Running") {
+            reconnectTailscale(); // Explicit polkit authorization required.
+            return;
+        }
+        trySafeHeal(true);
+    }
+
+    function trySafeHeal(manual): void {
+        if (selfHealing || safeRepairProc.running) return;
+        const unhealthy = tunnelState !== "online"
+            || devices.some(device => !device.isSelf && device.online
+                && device.canSsh && device.sshKnown && !device.sshAvailable);
+        if (!manual) {
+            if (!tailscaleStatusChecked || tailscaleBackend !== "Running") return;
+            if (!unhealthy) { autoHealBadChecks = 0; return; }
+            autoHealBadChecks += 1;
+            if (autoHealBadChecks < 3 || Date.now() - lastAutoHealAt < 300000) return;
+        }
+        lastAutoHealAt = Date.now();
+        selfHealing = true;
+        selfHealMessage = qsTr("Checking safe connection recovery...");
+        safeRepairProc.running = true;
+    }
+
     // A session has a direction, and the two halves are found in different
     // places. `viewing` is answerable here -- it is our own Moonlight client.
     // `shared` is the peer's client looking at us, which only the peer can see,
@@ -538,9 +570,47 @@ Singleton {
                 root.tunnelState = "unknown";
                 root.tunnelReason = qsTr("MCP tunnel diagnostic process exited with code %1.").arg(code);
             }
+            if (root.tunnelState === "online") {
+                root.tunnelFastRetries = 0;
+            } else if (root.tunnelFastRetries < 2) {
+                root.tunnelFastRetries++;
+                tunnelQuickRetry.restart();
+            }
         }
     }
 
+    Timer {
+        id: tunnelQuickRetry
+        interval: 2500
+        repeat: false
+        onTriggered: {
+            if (!tunnelStatusProc.running && root.tunnelProbeTargets.length > 0)
+                tunnelStatusProc.running = true;
+        }
+    }
+
+
+    Process {
+        id: safeRepairProc
+        running: false
+        command: [root.connectivityBin, "repair-safe"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const result = JSON.parse(text);
+                    root.selfHealMessage = String(result.message || "");
+                } catch (e) {
+                    root.selfHealMessage = qsTr("Invalid recovery response.");
+                }
+            }
+        }
+        onExited: code => {
+            root.selfHealing = false;
+            if (code !== 0 && !root.selfHealMessage)
+                root.selfHealMessage = qsTr("Automatic recovery could not complete.");
+            root.refreshNow();
+        }
+    }
 
     // Explicit local recovery action. Uses polkit to authorize one service
     // restart and reports whether both the tailnet and house are reachable.
@@ -684,6 +754,13 @@ Singleton {
             // the rescue tunnel/control plane recovers.
             root.diagnoseConnectivity();
         }
+    }
+
+    Timer {
+        interval: 15000
+        running: true
+        repeat: true
+        onTriggered: root.trySafeHeal(false)
     }
 
     Timer {

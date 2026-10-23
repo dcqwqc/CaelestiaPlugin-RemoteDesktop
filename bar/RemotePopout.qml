@@ -670,6 +670,11 @@ Item {
             color: Colours.palette.m3error
             wrapMode: Text.Wrap
             font: Tokens.font.label.small
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: Quickshell.clipboardText = String(parent.text || "")
+            }
         }
 
         StyledText {
@@ -830,6 +835,11 @@ Item {
             color: Colours.palette.m3error
             wrapMode: Text.Wrap
             font: Tokens.font.label.small
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: Quickshell.clipboardText = String(parent.text || "")
+            }
         }
     }
 
@@ -1428,6 +1438,11 @@ Item {
                 color: Colours.palette.m3error
                 font: Tokens.font.label.small
                 wrapMode: Text.Wrap
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: Quickshell.clipboardText = String(parent.text || "")
+                }
             }
         }
     }
@@ -1458,28 +1473,23 @@ Item {
             font: Tokens.font.body.builders.medium.weight(Font.Medium).build()
         }
 
-        // Tailscale's explicit recovery action is separate from safe refresh.
+        // Automatic recovery comes first. Explicit repair is a fallback
+        // requiring authorization if Tailscale must be restarted.
         ActionButton {
-            id: tailscaleRecoveryButton
+            id: connectionRecoveryButton
             visible: RemoteDesktop.RemoteStatus.tailscaleStatusChecked
-                && RemoteDesktop.RemoteStatus.tailscaleBackend !== "Running"
-            icon: RemoteDesktop.RemoteStatus.connectivityRepairing ? "hourglass_top" : "sync_problem"
+                && RemoteDesktop.RemoteStatus.overallHealth !== "reachable"
+            icon: RemoteDesktop.RemoteStatus.selfHealing
+                || RemoteDesktop.RemoteStatus.connectivityRepairing
+                ? "hourglass_top" : "build_circle"
             accent: true
             showHint: true
-            hint: qsTr("Start or restart Tailscale. Your remote connections may briefly disconnect. Files and VPN settings are preserved; authorization is required.")
-            disabled: RemoteDesktop.RemoteStatus.connectivityRepairing
-            onClicked: RemoteDesktop.RemoteStatus.reconnectTailscale()
-
-            Rectangle {
-                width: 7
-                height: 7
-                radius: 3.5
-                anchors.top: parent.top
-                anchors.right: parent.right
-                color: "#d99a00"
-                border.width: 1
-                border.color: Colours.palette.m3surface
-            }
+            hint: RemoteDesktop.RemoteStatus.selfHealing
+                ? qsTr("Automatic recovery is checking enabled user services.")
+                : qsTr("Repair connection: recheck diagnostics and recover stopped user services. Tailscale restart requires authorization. VPN routes and files remain unchanged.")
+            disabled: RemoteDesktop.RemoteStatus.selfHealing
+                || RemoteDesktop.RemoteStatus.connectivityRepairing
+            onClicked: RemoteDesktop.RemoteStatus.repairConnection()
         }
 
         ActionButton {
@@ -1636,6 +1646,11 @@ Item {
         color: Colours.palette.m3error
         wrapMode: Text.Wrap
         font: Tokens.font.label.small
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: Quickshell.clipboardText = String(parent.text || "")
+        }
     }
 
     // Separate from the existing Tailscale Route/MCP tunnel controls.

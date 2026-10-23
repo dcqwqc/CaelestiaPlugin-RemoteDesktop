@@ -1,0 +1,16 @@
+[Unit]
+Description=Self-heal the uplink, Tailscale, and Philipedia MCP tunnel
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/caelestia/plugins/remote-desktop/scripts/network-tunnel-watchdog
+TimeoutStartSec=75
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+StateDirectory=remote-desktop-watchdog
+StandardOutput=journal
+StandardError=journal

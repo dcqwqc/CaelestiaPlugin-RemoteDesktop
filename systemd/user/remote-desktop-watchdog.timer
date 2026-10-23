@@ -1,0 +1,13 @@
+[Unit]
+Description=Continuously verify remote desktop and MCP connectivity
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=60s
+AccuracySec=10s
+RandomizedDelaySec=5s
+Persistent=true
+Unit=remote-desktop-watchdog.service
+
+[Install]
+WantedBy=timers.target

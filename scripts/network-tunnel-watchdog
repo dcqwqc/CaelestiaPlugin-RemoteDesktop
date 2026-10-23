@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Keep the active uplink, Tailscale path, and Philipedia MCP tunnel healthy.
+# Recovery is deliberately gated by consecutive failures and a cooldown.
+set -u
+
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/remote-desktop-watchdog"
+mkdir -p "$state_dir"
+exec 9>"$state_dir/lock"
+flock -n 9 || exit 0
+
+fail_file="$state_dir/failures"
+repair_file="$state_dir/last-repair"
+min_failures=${REMOTE_WATCHDOG_MIN_FAILURES:-2}
+cooldown=${REMOTE_WATCHDOG_COOLDOWN:-300}
+host=${REMOTE_WATCHDOG_HOST:-philipedia.tail99b431.ts.net}
+dns_servers=${REMOTE_WATCHDOG_DNS:-"1.1.1.1 9.9.9.9"}
+
+read_number() {
+    local value=0
+    [[ -r $1 ]] && read -r value < "$1"
+    [[ $value =~ ^[0-9]+$ ]] || value=0
+    printf '%s' "$value"
+}
+
+reset_failures() {
+    printf '0\n' > "$fail_file"
+}
+
+active_uplink() {
+    ip -4 route show default 2>/dev/null | awk 'NR == 1 {print $5}'
+}
+
+active_connection() {
+    local device=$1
+    nmcli -g GENERAL.CONNECTION device show "$device" 2>/dev/null | head -1
+}
+
+internet_ok() {
+    timeout 5 ping -n -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 &&
+        timeout 7 getent ahostsv4 controlplane.tailscale.com >/dev/null 2>&1
+}
+
+tunnel_ok() {
+    timeout 12 ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 \
+        "$host" '~/philipedia-terminal/scripts/tunnel-watchdog.sh --status' 2>/dev/null |
+        grep -qx online
+}
+
+if internet_ok && tunnel_ok; then
+    reset_failures
+    exit 0
+fi
+
+failures=$(( $(read_number "$fail_file") + 1 ))
+printf '%s\n' "$failures" > "$fail_file"
+(( failures >= min_failures )) || exit 0
+
+now=$(date +%s)
+last_repair=$(read_number "$repair_file")
+(( now - last_repair >= cooldown )) || exit 0
+printf '%s\n' "$now" > "$repair_file"
+
+device=$(active_uplink)
+connection=''
+[[ -n $device ]] && connection=$(active_connection "$device")
+
+if ! internet_ok && [[ -n $connection && $connection != '--' ]]; then
+    # DHCP-provided DNS on USB tethering can remain installed after the phone's
+    # gateway changes. Persist known-good resolvers on this connection, then
+    # renew it. This is unprivileged for the desktop's NetworkManager operator.
+    nmcli connection modify "$connection" ipv4.ignore-auto-dns yes ipv4.dns "$dns_servers"
+    nmcli --wait 20 connection up "$connection"
+fi
+
+# Refresh endpoint discovery after any uplink transition. These debug actions
+# do not log out or discard Tailscale configuration.
+tailscale debug rebind >/dev/null 2>&1 || true
+tailscale debug restun >/dev/null 2>&1 || true
+
+if internet_ok; then
+    # If SSH is back, repair both remote halves of the MCP path. A failed SSH
+    # attempt is harmless; the next timer pass retries after the cooldown.
+    timeout 15 ssh -o BatchMode=yes -o ConnectTimeout=6 -o ConnectionAttempts=1 \
+        "$host" 'systemctl --user restart philipedia-terminal.service openai-philipedia-tunnel.service' \
+        >/dev/null 2>&1 || true
+fi
+
+if internet_ok && tunnel_ok; then
+    reset_failures
+    logger -t remote-desktop-watchdog 'Network and Philipedia MCP tunnel recovered'
+    exit 0
+fi
+
+logger -t remote-desktop-watchdog "Recovery attempted; health is still degraded (uplink=${connection:-unknown})"
+exit 1

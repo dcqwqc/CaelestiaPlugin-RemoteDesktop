@@ -19,6 +19,7 @@ class NetworkTunnelWatchdogTests(unittest.TestCase):
         text = WATCHDOG.read_text()
         self.assertIn("REMOTE_WATCHDOG_MIN_FAILURES", text)
         self.assertIn("REMOTE_WATCHDOG_COOLDOWN", text)
+        self.assertIn("tailscale ping", text)
         self.assertIn("flock -n", text)
         self.assertNotIn("tailscale down", text)
 
@@ -29,6 +30,7 @@ class NetworkTunnelWatchdogTests(unittest.TestCase):
         self.assertIn("ProtectSystem=strict", service)
         self.assertIn("StateDirectory=remote-desktop-watchdog", service)
         self.assertIn("Persistent=true", timer)
+        self.assertIn("OnUnitActiveSec=20s", timer)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ flock -n 9 || exit 0
 
 fail_file="$state_dir/failures"
 repair_file="$state_dir/last-repair"
-min_failures=${REMOTE_WATCHDOG_MIN_FAILURES:-2}
+min_failures=${REMOTE_WATCHDOG_MIN_FAILURES:-1}
 cooldown=${REMOTE_WATCHDOG_COOLDOWN:-300}
 host=${REMOTE_WATCHDOG_HOST:-philipedia.tail99b431.ts.net}
 dns_servers=${REMOTE_WATCHDOG_DNS:-"1.1.1.1 9.9.9.9"}
@@ -41,9 +41,15 @@ internet_ok() {
 }
 
 tunnel_ok() {
-    timeout 12 ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 \
-        "$host" '~/philipedia-terminal/scripts/tunnel-watchdog.sh --status' 2>/dev/null |
-        grep -qx online
+    local attempt result
+    timeout 6 tailscale ping -c 1 "$host" >/dev/null 2>&1 || true
+    for attempt in 1 2 3; do
+        result=$(timeout 10 ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 \
+            "$host" '~/philipedia-terminal/scripts/tunnel-watchdog.sh --status' 2>/dev/null) || true
+        [[ $result == online ]] && return 0
+        (( attempt < 3 )) && sleep 1
+    done
+    return 1
 }
 
 if internet_ok && tunnel_ok; then
@@ -56,20 +62,19 @@ printf '%s\n' "$failures" > "$fail_file"
 (( failures >= min_failures )) || exit 0
 
 now=$(date +%s)
-last_repair=$(read_number "$repair_file")
-(( now - last_repair >= cooldown )) || exit 0
-printf '%s\n' "$now" > "$repair_file"
-
 device=$(active_uplink)
 connection=''
 [[ -n $device ]] && connection=$(active_connection "$device")
 
-if ! internet_ok && [[ -n $connection && $connection != '--' ]]; then
+last_repair=$(read_number "$repair_file")
+if ! internet_ok && [[ -n $connection && $connection != '--' ]] &&
+   (( now - last_repair >= cooldown )); then
     # DHCP-provided DNS on USB tethering can remain installed after the phone's
     # gateway changes. Persist known-good resolvers on this connection, then
     # renew it. This is unprivileged for the desktop's NetworkManager operator.
     nmcli connection modify "$connection" ipv4.ignore-auto-dns yes ipv4.dns "$dns_servers"
     nmcli --wait 20 connection up "$connection"
+    printf '%s\n' "$now" > "$repair_file"
 fi
 
 # Refresh endpoint discovery after any uplink transition. These debug actions
@@ -80,7 +85,7 @@ tailscale debug restun >/dev/null 2>&1 || true
 if internet_ok; then
     # If SSH is back, repair both remote halves of the MCP path. A failed SSH
     # attempt is harmless; the next timer pass retries after the cooldown.
-    timeout 15 ssh -o BatchMode=yes -o ConnectTimeout=6 -o ConnectionAttempts=1 \
+    timeout 25 ssh -o BatchMode=yes -o ConnectTimeout=7 -o ConnectionAttempts=3 \
         "$host" 'systemctl --user restart philipedia-terminal.service openai-philipedia-tunnel.service' \
         >/dev/null 2>&1 || true
 fi
@@ -92,4 +97,4 @@ if internet_ok && tunnel_ok; then
 fi
 
 logger -t remote-desktop-watchdog "Recovery attempted; health is still degraded (uplink=${connection:-unknown})"
-exit 1
+exit 0

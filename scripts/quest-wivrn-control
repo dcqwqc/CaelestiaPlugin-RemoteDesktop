@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Quest controller: local on Tachibana, remote via trusted Tailscale SSH.
 set -euo pipefail
-action="$1"
-[[ -n "$action" ]] || action=status
+if (( $# > 0 )); then
+    action="$1"
+else
+    action=status
+fi
 case "$action" in
   status|auto|manual|start|stop|connect|wake) ;;
   *) echo "Unknown Quest action" >&2; exit 2 ;;

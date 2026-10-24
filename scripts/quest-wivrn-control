@@ -1,10 +1,30 @@
 #!/usr/bin/env bash
-# Devices plugin -> installed Quest supervisor. Works only on the host that
-# owns the controller; never targets unrelated phones or remote machines.
+# Quest controller: local on Tachibana, remote via trusted Tailscale SSH.
 set -euo pipefail
+if (( $# > 0 )); then
+    action="$1"
+else
+    action=status
+fi
+case "$action" in
+  status|auto|manual|start|stop|connect|wake) ;;
+  *) echo "Unknown Quest action" >&2; exit 2 ;;
+esac
 script="$HOME/Games/cyberpunk-vr-setup/quest-wivrn-control.py"
-if [[ ! -f "$script" ]]; then
-    echo '{"mode":"unavailable","server":false,"stream":false,"usb":false,"awake":false,"tailscale":false,"reachable":false,"error":"Quest controller is not installed on this host"}'
+if [[ -f "$script" ]]; then
+    exec /usr/bin/python3 "$script" "$action"
+fi
+if command -v ssh >/dev/null && command -v tailscale >/dev/null; then
+    if output=$(timeout 7 ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=yes \
+        qwqc@tachibana /usr/bin/python3 \
+        /home/qwqc/Games/cyberpunk-vr-setup/quest-wivrn-control.py "$action" 2>/dev/null); then
+        printf '%s\n' "$output"
+        exit 0
+    fi
+fi
+if [[ "$action" == "status" ]]; then
+    echo '{"mode":"unavailable","server":false,"stream":false,"usb":false,"awake":false,"tailscale":false,"reachable":false,"error":"Tachibana WiVRn controller unreachable"}'
     exit 0
 fi
-exec /usr/bin/python3 "$script" "${1:-status}"
+echo '{"ok":false,"message":"Tachibana WiVRn controller unreachable"}'
+exit 1

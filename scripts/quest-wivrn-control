@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Devices plugin -> installed Quest supervisor. Works only on the host that
+# owns the controller; never targets unrelated phones or remote machines.
+set -euo pipefail
+script="$HOME/Games/cyberpunk-vr-setup/quest-wivrn-control.py"
+if [[ ! -f "$script" ]]; then
+    echo '{"mode":"unavailable","server":false,"stream":false,"usb":false,"awake":false,"tailscale":false,"reachable":false,"error":"Quest controller is not installed on this host"}'
+    exit 0
+fi
+exec /usr/bin/python3 "$script" "${1:-status}"

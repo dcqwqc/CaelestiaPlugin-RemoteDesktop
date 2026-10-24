@@ -335,6 +335,64 @@ Item {
         onTriggered: if (!questMirrorProbe.running) questMirrorProbe.running = true
     }
 
+    // Quest 3 WiVRn lifecycle is managed by one persistent Tachibana
+    // supervisor. Status is read-only JSON; actions are explicit and the UI
+    // refreshes from the actual result instead of assuming success.
+    readonly property string questWivrnBin: `${Quickshell.env("HOME")}/.local/share/caelestia/plugins/remote-desktop/scripts/quest-wivrn-control`
+    property var questWivrnStatus: ({ mode: "unavailable", server: false,
+        stream: false, usb: false, awake: false, tailscale: false,
+        reachable: false, updated: 0 })
+    property bool questWivrnBusy: false
+    property string questWivrnMessage: ""
+    function runQuestWivrn(action): void {
+        if (questWivrnControl.running) return;
+        root.questWivrnBusy = true;
+        root.questWivrnMessage = "";
+        questWivrnControl.command = [root.questWivrnBin, action];
+        questWivrnControl.running = true;
+    }
+    Process {
+        id: questWivrnProbe
+        command: [root.questWivrnBin, "status"]
+        running: true
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    root.questWivrnStatus = JSON.parse(text);
+                } catch (e) {
+                    root.questWivrnStatus = { mode: "unavailable", server: false,
+                        stream: false, usb: false, awake: false,
+                        tailscale: false, reachable: false, updated: 0 };
+                }
+            }
+        }
+    }
+    Process {
+        id: questWivrnControl
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const result = JSON.parse(text);
+                    root.questWivrnMessage = String(result.message ?? result.last_action ?? "");
+                } catch (e) {
+                    root.questWivrnMessage = qsTr("Connection action did not return status");
+                }
+            }
+        }
+        onExited: code => {
+            root.questWivrnBusy = false;
+            if (code !== 0 && !root.questWivrnMessage)
+                root.questWivrnMessage = qsTr("Quest action failed");
+            if (!questWivrnProbe.running) questWivrnProbe.running = true;
+        }
+    }
+    Timer {
+        interval: 3000
+        repeat: true
+        running: root.visible
+        onTriggered: if (!questWivrnProbe.running) questWivrnProbe.running = true
+    }
+
     function syncExitMenu(): void {
         routeMenu.active = null;
     }
@@ -545,6 +603,27 @@ Item {
                 Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
                 spacing: 0
 
+                // Quest WiVRn service buttons are visible only for the actual
+                // headset. Off/Auto are persistent; stopping during a live
+                // game defers shutdown until the game exits.
+                ActionButton {
+                    visible: hostRow.isHeadset && root.questWivrnStatus.mode !== "unavailable"
+                    accent: !!root.questWivrnStatus.server && root.questWivrnStatus.mode !== "off"
+                    icon: root.questWivrnStatus.mode === "off" ? "play_circle" : "stop_circle"
+                    hint: root.questWivrnStatus.mode === "off"
+                        ? qsTr("Start WiVRn")
+                        : qsTr("Stop WiVRn (after gameplay ends)")
+                    onClicked: root.runQuestWivrn(root.questWivrnStatus.mode === "off" ? "start" : "stop")
+                }
+                ActionButton {
+                    visible: hostRow.isHeadset && root.questWivrnStatus.mode !== "unavailable"
+                    accent: root.questWivrnStatus.mode === "auto"
+                    icon: "sync"
+                    hint: root.questWivrnStatus.mode === "auto"
+                        ? qsTr("Disable automatic reconnect (leave server running)")
+                        : qsTr("Enable automatic reconnection")
+                    onClicked: root.runQuestWivrn(root.questWivrnStatus.mode === "auto" ? "manual" : "auto")
+                }
                 ActionButton {
                     visible: hostRow.isHeadset
                     disabled: !root.questMirrorAvailable && !root.questMirrorRunning
@@ -659,6 +738,54 @@ Item {
             text: root.transferFeedback
             color: Colours.palette.m3primary
             font: Tokens.font.label.small
+            wrapMode: Text.WordWrap
+        }
+
+        // Expanded live headset transport status; no false online claim when
+        // Tailscale is offline but USB ADB is available.
+        RowLayout {
+            visible: hostRow.isHeadset && hostRow.expanded
+            Layout.fillWidth: true
+            Layout.leftMargin: Tokens.padding.large
+            Layout.rightMargin: Tokens.padding.small
+            spacing: root.rowSpacing
+            StyledText {
+                Layout.fillWidth: true
+                font: Tokens.font.label.small
+                color: Colours.palette.m3onSurfaceVariant
+                wrapMode: Text.WordWrap
+                text: qsTr("WiVRn: ") + (root.questWivrnStatus.stream ? qsTr("Streaming")
+                    : root.questWivrnStatus.server ? qsTr("Ready")
+                    : qsTr("Stopped"))
+                    + " · " + (root.questWivrnStatus.usb ? qsTr("USB connected")
+                    : root.questWivrnStatus.tailscale ? qsTr("Tailscale online")
+                    : qsTr("Headset unreachable"))
+                    + " · " + (root.questWivrnStatus.mode === "auto" ? qsTr("Auto on")
+                    : root.questWivrnStatus.mode === "on" ? qsTr("Manual")
+                    : qsTr("Auto off"))
+            }
+            ActionButton {
+                visible: root.questWivrnStatus.usb && root.questWivrnStatus.awake
+                    && !root.questWivrnStatus.stream
+                icon: "link"
+                hint: qsTr("Connect Quest to WiVRn over USB")
+                onClicked: root.runQuestWivrn("connect")
+            }
+            ActionButton {
+                visible: root.questWivrnStatus.usb && !root.questWivrnStatus.awake
+                icon: "power_settings_new"
+                hint: qsTr("Request Quest wake over authorized USB ADB (not Wake-on-LAN)")
+                onClicked: root.runQuestWivrn("wake")
+            }
+        }
+        StyledText {
+            visible: hostRow.isHeadset && hostRow.expanded && root.questWivrnMessage.length > 0
+            Layout.fillWidth: true
+            Layout.leftMargin: Tokens.padding.large
+            Layout.rightMargin: Tokens.padding.small
+            font: Tokens.font.label.small
+            color: Colours.palette.m3onSurfaceVariant
+            text: root.questWivrnMessage
             wrapMode: Text.WordWrap
         }
 
